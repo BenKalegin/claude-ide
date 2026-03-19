@@ -6,8 +6,17 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { createLogger } from './logger';
+import { execSync as execSyncRaw } from 'child_process';
 
 const log = createLogger('session');
+
+function resolveClaudePath(): string {
+  try {
+    return execSyncRaw('which claude', { encoding: 'utf-8', shell: '/bin/zsh' }).trim();
+  } catch {
+    return 'claude';
+  }
+}
 
 export type SessionMode = 'terminal' | 'sdk';
 
@@ -63,13 +72,31 @@ export class SessionManager {
 
     log.info(`Creating terminal session: ${projectName} (${projectPath})`);
 
-    const pty = ptySpawn('claude', [], {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
-      cwd: projectPath,
-      env: { ...process.env } as Record<string, string>
-    });
+    const claudePath = resolveClaudePath();
+    log.info(`Using claude at: ${claudePath}`);
+
+    let pty: IPty;
+    try {
+      pty = ptySpawn(claudePath, [], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: projectPath,
+        env: { ...process.env } as Record<string, string>
+      });
+    } catch (err) {
+      log.error(`Failed to spawn PTY:`, err);
+      const session: SessionInfo = {
+        id,
+        projectPath,
+        projectName,
+        status: 'error',
+        mode: 'terminal',
+      };
+      this.sessions.set(id, session);
+      this.persistState();
+      return session;
+    }
 
     const session: SessionInfo = {
       id,
@@ -115,7 +142,8 @@ export class SessionManager {
     }
     if (session.status === 'active' && this.ptys.has(id)) return session;
 
-    const pty = ptySpawn('claude', session.claudeSessionId ? ['--resume', session.claudeSessionId] : [], {
+    const claudePath = resolveClaudePath();
+    const pty = ptySpawn(claudePath, session.claudeSessionId ? ['--resume', session.claudeSessionId] : [], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,

@@ -94,9 +94,9 @@ export function TabBar(): React.ReactElement {
             >
               <span className="tab-dot" style={{ backgroundColor: statusColor(s.status) }} />
               <span className="tab-name">{s.projectName}</span>
-              <span className={`tab-mode tab-mode-${s.mode || 'terminal'}`}>
-                {s.mode === 'sdk' ? 'SDK' : 'TTY'}
-              </span>
+              {s.mode === 'terminal' && (
+                <span className="tab-mode tab-mode-terminal">TTY</span>
+              )}
               <button
                 className="tab-close"
                 onClick={(e) => handleClose(e, s.id)}

@@ -43,21 +43,21 @@ export interface ThemeMeta {
 }
 
 const CLAUDE: ThemeColors = {
-  bgBase: '#2B2B2B',
-  bgSurface: '#333333',
-  bgOverlay: '#3D3D3D',
-  bgMuted: '#4A4A4A',
-  textPrimary: '#E8E8E8',
-  textSecondary: '#B0B0B0',
-  textMuted: '#7A7A7A',
+  bgBase: '#252525',
+  bgSurface: '#2F2F2F',
+  bgOverlay: '#383838',
+  bgMuted: '#444444',
+  textPrimary: '#E8E4E0',
+  textSecondary: '#ADA8A3',
+  textMuted: '#706C68',
   accent: '#C47B5C',
   accentHover: '#D4895C',
   green: '#7DB88A',
   red: '#C96B6B',
   yellow: '#C9A96B',
-  border: '#3D3D3D',
-  scrollbarBg: '#2B2B2B',
-  scrollbarThumb: '#4A4A4A',
+  border: '#363636',
+  scrollbarBg: '#252525',
+  scrollbarThumb: '#444444',
 };
 
 const CATPPUCCIN_MOCHA: ThemeColors = {

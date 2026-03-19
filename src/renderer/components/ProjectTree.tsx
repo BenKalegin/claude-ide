@@ -42,9 +42,9 @@ export function ProjectTree(): React.ReactElement {
         >
           <span className="tree-dot" style={{ backgroundColor: statusColor(s.status) }} />
           <span className="tree-name">{s.projectName}</span>
-          <span className={`tree-mode tree-mode-${s.mode || 'terminal'}`}>
-            {s.mode === 'sdk' ? 'SDK' : 'TTY'}
-          </span>
+          {s.mode === 'terminal' && (
+            <span className="tree-mode tree-mode-terminal">TTY</span>
+          )}
         </div>
       ))}
       {node.children.map((child) => renderNode(child, depth + 1))}

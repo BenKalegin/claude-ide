@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useSessionStore } from '../stores/session-store';
 
 interface Props {
@@ -52,85 +53,93 @@ export function SdkView({ sessionId }: Props): React.ReactElement {
   };
 
   const isThinking = session?.status === 'thinking';
+  const visible = messages.filter((msg) =>
+    msg.type !== 'system' || msg.content.startsWith('Note:')
+  );
 
   return (
-    <div className="sdk-view">
-      <div className="sdk-messages" ref={scrollRef}>
-        {messages.length === 0 && (
-          <div className="sdk-empty">
-            Send a message to start a Claude session
-          </div>
+    <div className="chat-view">
+      <div className="chat-messages" ref={scrollRef}>
+        {visible.length === 0 && (
+          <div className="chat-empty">Send a message to start a Claude session</div>
         )}
-        {messages.filter((msg) => msg.type !== 'system').map((msg, i) => (
-          <div key={i} className={`sdk-message sdk-message-${msg.type}`}>
-            <div className="sdk-message-header">
-              <span className="sdk-message-type">{formatType(msg.type)}</span>
-              {msg.toolName && <span className="sdk-tool-name">{msg.toolName}</span>}
-              {msg.cost && (
-                <span className="sdk-cost">${msg.cost.totalUsd.toFixed(4)}</span>
-              )}
-              <span className="sdk-timestamp">{formatTime(msg.timestamp)}</span>
+        {visible.map((msg, i) => {
+          if (msg.type === 'user') {
+            return (
+              <div key={i} className="chat-row chat-row-user">
+                <div className="chat-bubble-user">{msg.content}</div>
+              </div>
+            );
+          }
+          if (msg.type === 'system') {
+            return (
+              <div key={i} className="chat-row chat-row-notice">
+                <span className="chat-notice">{msg.content}</span>
+              </div>
+            );
+          }
+          if (msg.type === 'tool_use') {
+            return (
+              <div key={i} className="chat-row chat-row-tool">
+                <span className="chat-tool-label">{msg.toolName}</span>
+              </div>
+            );
+          }
+          if (msg.type === 'tool_result') {
+            return null;
+          }
+          // assistant or result
+          return (
+            <div key={i} className="chat-row chat-row-assistant">
+              <div className="md"><Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown></div>
             </div>
-            <div className="sdk-message-content">
-              {msg.type === 'tool_use' && msg.toolInput ? (
-                <pre className="sdk-tool-input">{JSON.stringify(msg.toolInput, null, 2)}</pre>
-              ) : msg.type === 'assistant' || msg.type === 'result' ? (
-                <div className="md"><Markdown>{msg.content}</Markdown></div>
-              ) : (
-                <pre>{msg.content}</pre>
-              )}
-            </div>
-          </div>
-        ))}
+          );
+        })}
         {isThinking && (
-          <div className="sdk-message sdk-message-thinking">
-            <div className="sdk-thinking-indicator">
-              <span className="sdk-dot" />
-              <span className="sdk-dot" />
-              <span className="sdk-dot" />
+          <div className="chat-row chat-row-assistant">
+            <div className="chat-thinking">
+              <span className="chat-dot" />
+              <span className="chat-dot" />
+              <span className="chat-dot" />
             </div>
           </div>
         )}
       </div>
-      <div className="sdk-input-area">
-        {session?.totalCost != null && session.totalCost > 0 && (
-          <div className="sdk-session-cost">Session cost: ${session.totalCost.toFixed(4)}</div>
-        )}
-        <div className="sdk-input-row">
+      <div className="chat-input-area">
+        <div className="chat-input-box">
           <textarea
-            className="sdk-input"
+            className="chat-input"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Send a message to Claude..."
-            rows={2}
+            placeholder="Reply..."
+            rows={1}
             disabled={sending}
           />
-          {isThinking ? (
-            <button className="sdk-btn sdk-btn-cancel" onClick={handleCancel}>Cancel</button>
-          ) : (
-            <button className="sdk-btn sdk-btn-send" onClick={handleSend} disabled={!input.trim() || sending}>
-              Send
-            </button>
-          )}
+          <div className="chat-input-footer">
+            <button className="chat-input-add" title="Add context">+</button>
+            <div className="chat-input-right">
+              {session?.totalCost != null && session.totalCost > 0 && (
+                <span className="chat-cost">${session.totalCost.toFixed(4)}</span>
+              )}
+              {isThinking ? (
+                <button className="chat-btn-stop" onClick={handleCancel} title="Stop">
+                  <svg width="14" height="14" viewBox="0 0 14 14"><rect x="2" y="2" width="10" height="10" rx="2" fill="currentColor"/></svg>
+                </button>
+              ) : (
+                <button
+                  className="chat-btn-submit"
+                  onClick={handleSend}
+                  disabled={!input.trim() || sending}
+                  title="Send"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16"><path d="M3 13V3l11 5-11 5z" fill="currentColor"/></svg>
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>
   );
-}
-
-function formatType(type: string): string {
-  switch (type) {
-    case 'assistant': return 'Claude';
-    case 'user': return 'You';
-    case 'system': return 'System';
-    case 'result': return 'Result';
-    case 'tool_use': return 'Tool';
-    case 'tool_result': return 'Output';
-    default: return type;
-  }
-}
-
-function formatTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }

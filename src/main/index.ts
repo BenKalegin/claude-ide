@@ -27,7 +27,7 @@ function createWindow(): BrowserWindow {
     minWidth: 800,
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
-    backgroundColor: '#2B2B2B',
+    backgroundColor: '#252525',
     icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

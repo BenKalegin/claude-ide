@@ -96,6 +96,7 @@ export class SdkSessionManager {
       const options: Record<string, unknown> = {
         cwd: session.projectPath,
         allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep', 'Agent'],
+        permissionMode: 'acceptEdits',
       };
 
       if (session.claudeSessionId) {
@@ -126,6 +127,19 @@ export class SdkSessionManager {
       }
 
       log.info(`SDK query complete: session=${id}`);
+
+      // Check if any background processes were spawned and warn
+      const bgWarning = this.detectBackgroundProcesses(session);
+      if (bgWarning) {
+        const warnMsg: SdkMessage = {
+          type: 'system',
+          content: bgWarning,
+          timestamp: Date.now(),
+        };
+        session.messages.push(warnMsg);
+        this.emitMessage(id, warnMsg);
+      }
+
       session.status = 'active';
       this.emitStatus(id, 'active');
     } catch (err: unknown) {
@@ -229,6 +243,28 @@ export class SdkSessionManager {
       return (value as { text: string }).text;
     }
     return '';
+  }
+
+  private detectBackgroundProcesses(session: SdkSessionInfo): string | null {
+    const lastMessages = session.messages.slice(-10);
+    const bashMessages = lastMessages.filter(
+      (m) => m.type === 'tool_use' && m.toolName === 'Bash'
+    );
+    if (bashMessages.length === 0) return null;
+
+    const longRunningPatterns = [
+      'npm run dev', 'npm start', 'yarn dev', 'pnpm dev',
+      'npx ', 'node ', 'python ', 'cargo run',
+      '--watch', 'serve', 'nodemon',
+    ];
+
+    for (const msg of bashMessages) {
+      const input = JSON.stringify(msg.toolInput || '').toLowerCase();
+      if (longRunningPatterns.some((p) => input.includes(p.toLowerCase()))) {
+        return 'Note: Background processes started during this query may have been terminated. Use Terminal (TTY) mode for long-running processes like dev servers.';
+      }
+    }
+    return null;
   }
 
   getMessages(id: string): SdkMessage[] {
