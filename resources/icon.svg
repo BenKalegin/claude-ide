@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Rounded square background -->
+  <rect x="0" y="0" width="512" height="512" rx="96" ry="96" fill="#1a1a1a"/>
+
+  <!-- 16 beams, each a unique color, radiating from center -->
+  <!-- Beams are tapered: ~16px wide at center, pointed tip -->
+
+  <!-- 0° Top - orange -->
+  <polygon points="256,38 263,215 256,232 249,215" fill="#E8956A"/>
+
+  <!-- 22.5° - peach -->
+  <polygon points="339,55 275,218 266,213 328,65" fill="#F9A875"/>
+
+  <!-- 45° Top-right - hot pink -->
+  <polygon points="410,102 290,222 280,212 398,114" fill="#F472B6"/>
+
+  <!-- 67.5° - rose -->
+  <polygon points="457,173 297,240 290,229 447,162" fill="#E879A0"/>
+
+  <!-- 90° Right - purple -->
+  <polygon points="474,256 297,263 280,256 297,249" fill="#C084FC"/>
+
+  <!-- 112.5° - violet -->
+  <polygon points="457,339 297,275 290,283 447,350" fill="#A78BFA"/>
+
+  <!-- 135° Bottom-right - blue -->
+  <polygon points="410,410 290,290 280,300 398,398" fill="#60A5FA"/>
+
+  <!-- 157.5° - sky blue -->
+  <polygon points="339,457 275,297 266,299 328,447" fill="#38BDF8"/>
+
+  <!-- 180° Bottom - cyan -->
+  <polygon points="256,474 263,297 256,280 249,297" fill="#22D3EE"/>
+
+  <!-- 202.5° - teal -->
+  <polygon points="173,457 237,297 246,299 184,447" fill="#2DD4BF"/>
+
+  <!-- 225° Bottom-left - green -->
+  <polygon points="102,410 222,290 232,300 114,398" fill="#4ADE80"/>
+
+  <!-- 247.5° - lime -->
+  <polygon points="55,339 215,275 222,283 65,350" fill="#A3E635"/>
+
+  <!-- 270° Left - yellow -->
+  <polygon points="38,256 215,263 232,256 215,249" fill="#FACC15"/>
+
+  <!-- 292.5° - amber -->
+  <polygon points="55,173 215,240 222,229 65,162" fill="#FBBF24"/>
+
+  <!-- 315° Top-left - warm orange -->
+  <polygon points="102,102 222,222 232,212 114,114" fill="#FB923C"/>
+
+  <!-- 337.5° - tangerine -->
+  <polygon points="173,55 237,218 246,213 184,65" fill="#F97316"/>
+
+  <!-- Center glow -->
+  <circle cx="256" cy="256" r="22" fill="#E8956A"/>
+  <circle cx="256" cy="256" r="14" fill="#F4B78A"/>
+  <circle cx="256" cy="256" r="7" fill="#FDE8D0"/>
+</svg>
