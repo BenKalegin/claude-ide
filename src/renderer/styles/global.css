@@ -621,16 +621,28 @@ html, body, #root {
   -webkit-app-region: no-drag;
 }
 
-.tree-folder {
+.tree-project-header {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
+  padding: 6px 8px;
   font-size: 11px;
   color: var(--color-text-muted);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+.tree-project-header:hover .tree-project-actions {
+  opacity: 1;
+}
+
+.tree-project-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.1s;
 }
 
 .tree-folder-icon {
@@ -641,11 +653,44 @@ html, body, #root {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 6px 8px 6px 20px;
   cursor: pointer;
   border-left: 2px solid transparent;
   transition: background 0.15s;
   font-size: 12px;
+}
+
+.tree-item:hover .tree-item-actions {
+  opacity: 1;
+}
+
+.tree-item-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.1s;
+  flex-shrink: 0;
+}
+
+.tree-action-btn {
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: color 0.1s, background 0.1s;
+}
+
+.tree-action-btn:hover {
+  color: var(--color-text);
+  background: var(--color-overlay);
 }
 
 .tree-item:hover {
@@ -685,6 +730,19 @@ html, body, #root {
 
 .tree-mode-sdk {
   color: var(--color-blue);
+}
+
+.tree-rename-input {
+  flex: 1;
+  background: var(--color-bg);
+  border: 1px solid var(--color-blue);
+  border-radius: 3px;
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 1px 4px;
+  outline: none;
+  min-width: 0;
 }
 
 /* Mode badges */

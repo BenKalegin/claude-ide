@@ -4,11 +4,12 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { createLogger } from './logger';
+import { SessionMode, SessionStatus, SdkMessageType, IpcChannel } from '../core/constants';
 
 const log = createLogger('sdk');
 
 export interface SdkMessage {
-  type: 'assistant' | 'user' | 'system' | 'result' | 'tool_use' | 'tool_result';
+  type: SdkMessageType;
   content: string;
   timestamp: number;
   toolName?: string;
@@ -22,8 +23,8 @@ export interface SdkSessionInfo {
   projectPath: string;
   projectName: string;
   claudeSessionId?: string;
-  status: 'active' | 'stopped' | 'error' | 'thinking';
-  mode: 'sdk';
+  status: SessionStatus;
+  mode: typeof SessionMode.Sdk;
   messages: SdkMessage[];
   totalCost: number;
 }
@@ -59,8 +60,8 @@ export class SdkSessionManager {
       id,
       projectPath,
       projectName,
-      status: 'stopped',
-      mode: 'sdk',
+      status: SessionStatus.Stopped,
+      mode: SessionMode.Sdk,
       messages: [],
       totalCost: 0,
     };
@@ -76,11 +77,11 @@ export class SdkSessionManager {
 
     log.info(`SDK query: session=${id}, prompt="${prompt.substring(0, 80)}"`);
 
-    session.status = 'thinking';
-    this.emitStatus(id, 'thinking');
+    session.status = SessionStatus.Thinking;
+    this.emitStatus(id, SessionStatus.Thinking);
 
     const userMsg: SdkMessage = {
-      type: 'user',
+      type: SdkMessageType.User,
       content: prompt,
       timestamp: Date.now(),
     };
@@ -115,7 +116,7 @@ export class SdkSessionManager {
           session.messages.push(sdkMsg);
           this.emitMessage(id, sdkMsg);
 
-          if (sdkMsg.type === 'system' && sdkMsg.sessionId) {
+          if (sdkMsg.type === SdkMessageType.System && sdkMsg.sessionId) {
             session.claudeSessionId = sdkMsg.sessionId;
           }
 
@@ -132,7 +133,7 @@ export class SdkSessionManager {
       const bgWarning = this.detectBackgroundProcesses(session);
       if (bgWarning) {
         const warnMsg: SdkMessage = {
-          type: 'system',
+          type: SdkMessageType.System,
           content: bgWarning,
           timestamp: Date.now(),
         };
@@ -140,24 +141,24 @@ export class SdkSessionManager {
         this.emitMessage(id, warnMsg);
       }
 
-      session.status = 'active';
-      this.emitStatus(id, 'active');
+      session.status = SessionStatus.Active;
+      this.emitStatus(id, SessionStatus.Active);
     } catch (err: unknown) {
       if ((err as Error).name === 'AbortError') {
         log.info(`SDK query cancelled: session=${id}`);
-        session.status = 'stopped';
-        this.emitStatus(id, 'stopped');
+        session.status = SessionStatus.Stopped;
+        this.emitStatus(id, SessionStatus.Stopped);
       } else {
         log.error(`SDK query error: session=${id}`, err);
-        session.status = 'error';
+        session.status = SessionStatus.Error;
         const errorMsg: SdkMessage = {
-          type: 'system',
+          type: SdkMessageType.System,
           content: `Error: ${(err as Error).message}`,
           timestamp: Date.now(),
         };
         session.messages.push(errorMsg);
         this.emitMessage(id, errorMsg);
-        this.emitStatus(id, 'error');
+        this.emitStatus(id, SessionStatus.Error);
       }
     } finally {
       this.activeQueries.delete(id);
@@ -177,42 +178,42 @@ export class SdkSessionManager {
     const type = message.type as string;
 
     switch (type) {
-      case 'system': {
+      case SdkMessageType.System: {
         const sessionId = message.session_id as string | undefined;
         return {
-          type: 'system',
+          type: SdkMessageType.System,
           content: sessionId ? `Session initialized: ${sessionId}` : 'System message',
           timestamp: Date.now(),
           sessionId,
         };
       }
-      case 'assistant': {
+      case SdkMessageType.Assistant: {
         const content = this.extractContent(message.message || message.content || message);
         if (!content) return null;
-        return { type: 'assistant', content, timestamp: Date.now() };
+        return { type: SdkMessageType.Assistant, content, timestamp: Date.now() };
       }
-      case 'tool_use': {
+      case SdkMessageType.ToolUse: {
         return {
-          type: 'tool_use',
+          type: SdkMessageType.ToolUse,
           content: `Using tool: ${message.name}`,
           timestamp: Date.now(),
           toolName: message.name as string,
           toolInput: message.input as Record<string, unknown>,
         };
       }
-      case 'tool_result': {
+      case SdkMessageType.ToolResult: {
         const content = this.extractContent(message.content || message.output || message);
         return {
-          type: 'tool_result',
+          type: SdkMessageType.ToolResult,
           content: content || 'Tool completed',
           timestamp: Date.now(),
           toolName: message.tool_name as string | undefined,
         };
       }
-      case 'result': {
+      case SdkMessageType.Result: {
         const cost = message.cost as { input_tokens?: number; output_tokens?: number; total_usd?: number } | undefined;
         return {
-          type: 'result',
+          type: SdkMessageType.Result,
           content: (message.result as string) || 'Completed',
           timestamp: Date.now(),
           cost: cost ? {
@@ -248,7 +249,7 @@ export class SdkSessionManager {
   private detectBackgroundProcesses(session: SdkSessionInfo): string | null {
     const lastMessages = session.messages.slice(-10);
     const bashMessages = lastMessages.filter(
-      (m) => m.type === 'tool_use' && m.toolName === 'Bash'
+      (m) => m.type === SdkMessageType.ToolUse && m.toolName === 'Bash'
     );
     if (bashMessages.length === 0) return null;
 
@@ -288,7 +289,7 @@ export class SdkSessionManager {
     this.cancelQuery(id);
     const session = this.sessions.get(id);
     if (session) {
-      session.status = 'stopped';
+      session.status = SessionStatus.Stopped;
       this.persistState();
       return true;
     }
@@ -336,15 +337,15 @@ export class SdkSessionManager {
 
   private emitMessage(id: string, message: SdkMessage): void {
     this.appendMessage(id, message);
-    this.window?.webContents.send('sdk-message', { id, message });
+    this.window?.webContents.send(IpcChannel.SdkMessage, { id, message });
   }
 
   private emitStatus(id: string, status: string): void {
-    this.window?.webContents.send('session-status', { id, status });
+    this.window?.webContents.send(IpcChannel.SessionStatus, { id, status });
   }
 
   private emitCost(id: string, totalCost: number): void {
-    this.window?.webContents.send('sdk-cost', { id, totalCost });
+    this.window?.webContents.send(IpcChannel.SdkCost, { id, totalCost });
   }
 
   persistState(): void {
@@ -376,8 +377,8 @@ export class SdkSessionManager {
         if (!this.sessions.has(s.id)) {
           this.sessions.set(s.id, {
             ...s,
-            status: 'stopped',
-            mode: 'sdk',
+            status: SessionStatus.Stopped,
+            mode: SessionMode.Sdk,
             messages: [],
           });
         }

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useSessionStore } from '../stores/session-store';
+import { SdkMessageType, SessionStatus } from '../../core/constants';
 
 interface Props {
   sessionId: string;
@@ -55,9 +56,9 @@ export function SdkView({ sessionId }: Props): React.ReactElement {
     }
   };
 
-  const isThinking = session?.status === 'thinking';
+  const isThinking = session?.status === SessionStatus.Thinking;
   const visible = messages.filter((msg) =>
-    msg.type !== 'system' || msg.content.startsWith('Note:')
+    msg.type !== SdkMessageType.System || msg.content.startsWith('Note:')
   );
 
   return (
@@ -67,28 +68,28 @@ export function SdkView({ sessionId }: Props): React.ReactElement {
           <div className="chat-empty">Send a message to start a Claude session</div>
         )}
         {visible.map((msg, i) => {
-          if (msg.type === 'user') {
+          if (msg.type === SdkMessageType.User) {
             return (
               <div key={i} className="chat-row chat-row-user">
                 <div className="chat-bubble-user">{msg.content}</div>
               </div>
             );
           }
-          if (msg.type === 'system') {
+          if (msg.type === SdkMessageType.System) {
             return (
               <div key={i} className="chat-row chat-row-notice">
                 <span className="chat-notice">{msg.content}</span>
               </div>
             );
           }
-          if (msg.type === 'tool_use') {
+          if (msg.type === SdkMessageType.ToolUse) {
             return (
               <div key={i} className="chat-row chat-row-tool">
                 <span className="chat-tool-label">{msg.toolName}</span>
               </div>
             );
           }
-          if (msg.type === 'tool_result') {
+          if (msg.type === SdkMessageType.ToolResult) {
             return null;
           }
           // assistant or result

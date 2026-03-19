@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useSessionStore } from '../stores/session-store';
+import { SessionMode, SessionStatus } from '../../core/constants';
 
 export function TabBar(): React.ReactElement {
   const sessions = useSessionStore((s) => s.sessions);
@@ -57,13 +58,13 @@ export function TabBar(): React.ReactElement {
   const handleKill = async (id: string) => {
     setContextMenu(null);
     await window.api.sessions.kill(id);
-    updateSession(id, { status: 'stopped', pid: undefined });
+    updateSession(id, { status: SessionStatus.Stopped, pid: undefined });
   };
 
   const handleReload = async (id: string) => {
     setContextMenu(null);
     await window.api.sessions.kill(id);
-    updateSession(id, { status: 'stopped', pid: undefined });
+    updateSession(id, { status: SessionStatus.Stopped, pid: undefined });
     const session = await window.api.sessions.resume(id);
     if (session) {
       updateSession(id, session);
@@ -72,9 +73,9 @@ export function TabBar(): React.ReactElement {
 
   const statusColor = (status: string) => {
     switch (status) {
-      case 'active': return 'var(--color-green)';
-      case 'thinking': return 'var(--color-yellow)';
-      case 'error': return 'var(--color-red)';
+      case SessionStatus.Active: return 'var(--color-green)';
+      case SessionStatus.Thinking: return 'var(--color-yellow)';
+      case SessionStatus.Error: return 'var(--color-red)';
       default: return 'var(--color-gray)';
     }
   };
@@ -94,7 +95,7 @@ export function TabBar(): React.ReactElement {
             >
               <span className="tab-dot" style={{ backgroundColor: statusColor(s.status) }} />
               <span className="tab-name">{s.projectName}</span>
-              {s.mode === 'terminal' && (
+              {s.mode === SessionMode.Terminal && (
                 <span className="tab-mode tab-mode-terminal">TTY</span>
               )}
               <button
@@ -114,11 +115,11 @@ export function TabBar(): React.ReactElement {
           >+</button>
           {showAddMenu && (
             <div className="tab-add-menu">
-              <button onClick={() => handleAddProject('terminal')}>
+              <button onClick={() => handleAddProject(SessionMode.Terminal)}>
                 <span className="mode-icon">&#9654;</span>
                 Terminal (TTY)
               </button>
-              <button onClick={() => handleAddProject('sdk')}>
+              <button onClick={() => handleAddProject(SessionMode.Sdk)}>
                 <span className="mode-icon">&#9671;</span>
                 SDK Mode
               </button>

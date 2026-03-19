@@ -6,26 +6,24 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { createLogger } from './logger';
-import { execSync as execSyncRaw } from 'child_process';
+import { SessionMode, SessionStatus, IpcChannel, PTY_TERM, PTY_DEFAULT_COLS, PTY_DEFAULT_ROWS } from '../core/constants';
 
 const log = createLogger('session');
 
 function resolveClaudePath(): string {
   try {
-    return execSyncRaw('which claude', { encoding: 'utf-8', shell: '/bin/zsh' }).trim();
+    return execSync('which claude', { encoding: 'utf-8', shell: '/bin/zsh' }).trim();
   } catch {
     return 'claude';
   }
 }
-
-export type SessionMode = 'terminal' | 'sdk';
 
 export interface SessionInfo {
   id: string;
   projectPath: string;
   projectName: string;
   claudeSessionId?: string;
-  status: 'active' | 'stopped' | 'error' | 'thinking';
+  status: SessionStatus;
   pid?: number;
   mode: SessionMode;
 }
@@ -53,17 +51,17 @@ export class SessionManager {
     this.window = win;
   }
 
-  createSession(projectPath: string, mode: SessionMode = 'terminal'): SessionInfo {
+  createSession(projectPath: string, mode: SessionMode = SessionMode.Terminal): SessionInfo {
     const id = crypto.randomUUID();
     const projectName = path.basename(projectPath);
 
-    if (mode === 'sdk') {
+    if (mode === SessionMode.Sdk) {
       const session: SessionInfo = {
         id,
         projectPath,
         projectName,
-        status: 'stopped',
-        mode: 'sdk',
+        status: SessionStatus.Stopped,
+        mode: SessionMode.Sdk,
       };
       this.sessions.set(id, session);
       this.persistState();
@@ -78,9 +76,9 @@ export class SessionManager {
     let pty: IPty;
     try {
       pty = ptySpawn(claudePath, [], {
-        name: 'xterm-256color',
-        cols: 120,
-        rows: 30,
+        name: PTY_TERM,
+        cols: PTY_DEFAULT_COLS,
+        rows: PTY_DEFAULT_ROWS,
         cwd: projectPath,
         env: { ...process.env } as Record<string, string>
       });
@@ -90,8 +88,8 @@ export class SessionManager {
         id,
         projectPath,
         projectName,
-        status: 'error',
-        mode: 'terminal',
+        status: SessionStatus.Error,
+        mode: SessionMode.Terminal,
       };
       this.sessions.set(id, session);
       this.persistState();
@@ -102,9 +100,9 @@ export class SessionManager {
       id,
       projectPath,
       projectName,
-      status: 'active',
+      status: SessionStatus.Active,
       pid: pty.pid,
-      mode: 'terminal',
+      mode: SessionMode.Terminal,
     };
 
     log.info(`Session ${id} spawned, pid: ${pty.pid}`);
@@ -113,16 +111,16 @@ export class SessionManager {
     this.ptys.set(id, pty);
 
     pty.onData((data) => {
-      this.window?.webContents.send('session-data', { id, data });
+      this.window?.webContents.send(IpcChannel.SessionData, { id, data });
     });
 
     pty.onExit(({ exitCode }) => {
       log.info(`Session ${id} exited, code: ${exitCode}`);
       const s = this.sessions.get(id);
       if (s) {
-        s.status = exitCode === 0 ? 'stopped' : 'error';
+        s.status = exitCode === 0 ? SessionStatus.Stopped : SessionStatus.Error;
         s.pid = undefined;
-        this.window?.webContents.send('session-status', { id, status: s.status });
+        this.window?.webContents.send(IpcChannel.SessionStatus, { id, status: s.status });
       }
       this.ptys.delete(id);
       this.persistState();
@@ -135,36 +133,36 @@ export class SessionManager {
   resumeSession(id: string): SessionInfo | null {
     const session = this.sessions.get(id);
     if (!session) return null;
-    if (session.mode === 'sdk') {
-      session.status = 'active';
+    if (session.mode === SessionMode.Sdk) {
+      session.status = SessionStatus.Active;
       this.persistState();
       return session;
     }
-    if (session.status === 'active' && this.ptys.has(id)) return session;
+    if (session.status === SessionStatus.Active && this.ptys.has(id)) return session;
 
     const claudePath = resolveClaudePath();
     const pty = ptySpawn(claudePath, session.claudeSessionId ? ['--resume', session.claudeSessionId] : [], {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
+      name: PTY_TERM,
+      cols: PTY_DEFAULT_COLS,
+      rows: PTY_DEFAULT_ROWS,
       cwd: session.projectPath,
       env: { ...process.env } as Record<string, string>
     });
 
-    session.status = 'active';
+    session.status = SessionStatus.Active;
     session.pid = pty.pid;
     this.ptys.set(id, pty);
 
     pty.onData((data) => {
-      this.window?.webContents.send('session-data', { id, data });
+      this.window?.webContents.send(IpcChannel.SessionData, { id, data });
     });
 
     pty.onExit(({ exitCode }) => {
       const s = this.sessions.get(id);
       if (s) {
-        s.status = exitCode === 0 ? 'stopped' : 'error';
+        s.status = exitCode === 0 ? SessionStatus.Stopped : SessionStatus.Error;
         s.pid = undefined;
-        this.window?.webContents.send('session-status', { id, status: s.status });
+        this.window?.webContents.send(IpcChannel.SessionStatus, { id, status: s.status });
       }
       this.ptys.delete(id);
       this.persistState();
@@ -182,7 +180,7 @@ export class SessionManager {
     }
     const session = this.sessions.get(id);
     if (session) {
-      session.status = 'stopped';
+      session.status = SessionStatus.Stopped;
       session.pid = undefined;
       this.persistState();
       return true;
@@ -265,8 +263,8 @@ export class SessionManager {
         if (!this.sessions.has(s.id)) {
           this.sessions.set(s.id, {
             ...s,
-            status: 'stopped',
-            mode: s.mode || 'terminal',
+            status: SessionStatus.Stopped,
+            mode: s.mode || SessionMode.Terminal,
           });
         }
       }
@@ -276,12 +274,21 @@ export class SessionManager {
     }
   }
 
+  autoResumeSessions(): void {
+    for (const session of this.sessions.values()) {
+      if (session.mode === SessionMode.Terminal && session.status === SessionStatus.Stopped && !this.ptys.has(session.id)) {
+        log.info(`Auto-resuming terminal session: ${session.id} (${session.projectName})`);
+        this.resumeSession(session.id);
+      }
+    }
+  }
+
   startProcessMonitor(): void {
     this.processTimer = setInterval(() => {
       for (const session of this.sessions.values()) {
-        if (session.status === 'active' && session.pid) {
+        if (session.status === SessionStatus.Active && session.pid) {
           const procs = this.getChildProcesses(session.id);
-          this.window?.webContents.send('session-processes', { id: session.id, processes: procs });
+          this.window?.webContents.send(IpcChannel.SessionProcesses, { id: session.id, processes: procs });
         }
       }
     }, 3000);

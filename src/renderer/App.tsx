@@ -8,6 +8,7 @@ import { Resizer } from './components/Resizer';
 import { SettingsDialog } from './components/SettingsDialog';
 import { useSessionStore } from './stores/session-store';
 import { applyTheme } from './lib/theme-applier';
+import { SessionMode } from '../core/constants';
 
 export function App(): React.ReactElement {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
@@ -29,6 +30,9 @@ export function App(): React.ReactElement {
 
   useEffect(() => {
     window.api.sessions.list().then(setSessions);
+    window.api.sessions.getProjectNames().then((names) => {
+      useSessionStore.getState().setProjectNames(names);
+    });
 
     const unsubStatus = window.api.sessions.onStatusChange(({ id, status }) => {
       updateSession(id, { status: status as SessionInfo['status'] });
@@ -54,7 +58,7 @@ export function App(): React.ReactElement {
     };
   }, []);
 
-  const isTerminal = !activeSession || activeSession.mode === 'terminal';
+  const isTerminal = !activeSession || activeSession.mode === SessionMode.Terminal;
 
   return (
     <div className="app-layout-v2">
@@ -79,7 +83,7 @@ export function App(): React.ReactElement {
               <div className="terminal-placeholder">
                 <div className="placeholder-text">Loading session...</div>
               </div>
-            ) : activeSession.mode === 'sdk' ? (
+            ) : activeSession.mode === SessionMode.Sdk ? (
               <SdkView sessionId={activeSessionId} />
             ) : (
               <TerminalView sessionId={activeSessionId} />

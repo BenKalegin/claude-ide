@@ -1,8 +1,11 @@
 import { app, BrowserWindow, ipcMain, dialog, nativeImage } from 'electron';
 import { join } from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import log, { createLogger, getLogPath } from './logger';
-import { SessionManager, SessionMode } from './session-manager';
+import { SessionManager } from './session-manager';
 import { SdkSessionManager } from './sdk-session-manager';
+import { IpcChannel, SessionMode, SessionStatus } from '../core/constants';
 
 const mainLog = createLogger('main');
 const ipcLog = createLogger('ipc');
@@ -69,9 +72,9 @@ app.whenReady().then(() => {
 
   sessionManager.startProcessMonitor();
 
-  ipcMain.handle('create-session', async (_e, projectPath: string, mode: SessionMode = 'terminal') => {
+  ipcMain.handle(IpcChannel.CreateSession, async (_e, projectPath: string, mode: SessionMode = SessionMode.Terminal) => {
     ipcLog.info('create-session', { projectPath, mode });
-    if (mode === 'sdk') {
+    if (mode === SessionMode.Sdk) {
       const s = await sdkSessionManager.createSession(projectPath);
       ipcLog.info('SDK session created:', s.id);
       return s;
@@ -81,17 +84,17 @@ app.whenReady().then(() => {
     return s;
   });
 
-  ipcMain.handle('resume-session', async (_e, id: string) => {
+  ipcMain.handle(IpcChannel.ResumeSession, async (_e, id: string) => {
     ipcLog.info('resume-session', id);
     const sdkSession = sdkSessionManager.getSession(id);
     if (sdkSession) {
-      sdkSession.status = 'active';
+      sdkSession.status = SessionStatus.Active;
       return sdkSession;
     }
     return sessionManager.resumeSession(id);
   });
 
-  ipcMain.handle('kill-session', async (_e, id: string) => {
+  ipcMain.handle(IpcChannel.KillSession, async (_e, id: string) => {
     ipcLog.info('kill-session', id);
     const sdkSession = sdkSessionManager.getSession(id);
     if (sdkSession) {
@@ -100,7 +103,23 @@ app.whenReady().then(() => {
     return sessionManager.killSession(id);
   });
 
-  ipcMain.handle('remove-session', async (_e, id: string) => {
+  ipcMain.handle(IpcChannel.RenameProject, async (_e, projectPath: string, name: string) => {
+    ipcLog.info('rename-project', projectPath, name);
+    const namesFile = join(os.homedir(), '.claude-ide', 'project-names.json');
+    let names: Record<string, string> = {};
+    try { names = JSON.parse(fs.readFileSync(namesFile, 'utf-8')); } catch {}
+    names[projectPath] = name;
+    fs.mkdirSync(join(os.homedir(), '.claude-ide'), { recursive: true });
+    fs.writeFileSync(namesFile, JSON.stringify(names, null, 2));
+    return true;
+  });
+
+  ipcMain.handle(IpcChannel.GetProjectNames, async () => {
+    const namesFile = join(os.homedir(), '.claude-ide', 'project-names.json');
+    try { return JSON.parse(fs.readFileSync(namesFile, 'utf-8')); } catch { return {}; }
+  });
+
+  ipcMain.handle(IpcChannel.RemoveSession, async (_e, id: string) => {
     ipcLog.info('remove-session', id);
     const sdkSession = sdkSessionManager.getSession(id);
     if (sdkSession) {
@@ -111,7 +130,7 @@ app.whenReady().then(() => {
     return true;
   });
 
-  ipcMain.handle('list-sessions', async () => {
+  ipcMain.handle(IpcChannel.ListSessions, async () => {
     const terminal = sessionManager.getAll();
     const sdk = sdkSessionManager.getAll().map((s) => ({
       id: s.id,
@@ -119,45 +138,45 @@ app.whenReady().then(() => {
       projectName: s.projectName,
       claudeSessionId: s.claudeSessionId,
       status: s.status,
-      mode: 'sdk' as const,
+      mode: SessionMode.Sdk,
       totalCost: s.totalCost,
     }));
     return [...terminal, ...sdk];
   });
 
-  ipcMain.handle('get-child-processes', async (_e, id: string) => {
+  ipcMain.handle(IpcChannel.GetChildProcesses, async (_e, id: string) => {
     return sessionManager.getChildProcesses(id);
   });
 
-  ipcMain.handle('kill-child-process', async (_e, pid: number) => {
+  ipcMain.handle(IpcChannel.KillChildProcess, async (_e, pid: number) => {
     ipcLog.info('kill-child-process', pid);
     return sessionManager.killChildProcess(pid);
   });
 
-  ipcMain.on('write-to-session', (_e, { id, data }: { id: string; data: string }) => {
+  ipcMain.on(IpcChannel.WriteToSession, (_e, { id, data }: { id: string; data: string }) => {
     sessionManager.writeToSession(id, data);
   });
 
-  ipcMain.on('resize-session', (_e, { id, cols, rows }: { id: string; cols: number; rows: number }) => {
+  ipcMain.on(IpcChannel.ResizeSession, (_e, { id, cols, rows }: { id: string; cols: number; rows: number }) => {
     ipcLog.debug('resize-session', id, `${cols}x${rows}`);
     sessionManager.resizeSession(id, cols, rows);
   });
 
-  ipcMain.handle('sdk-send-message', async (_e, id: string, prompt: string) => {
+  ipcMain.handle(IpcChannel.SdkSendMessage, async (_e, id: string, prompt: string) => {
     ipcLog.info('sdk-send-message', id, prompt.substring(0, 80));
     await sdkSessionManager.sendMessage(id, prompt);
   });
 
-  ipcMain.handle('sdk-cancel-query', async (_e, id: string) => {
+  ipcMain.handle(IpcChannel.SdkCancelQuery, async (_e, id: string) => {
     ipcLog.info('sdk-cancel-query', id);
     sdkSessionManager.cancelQuery(id);
   });
 
-  ipcMain.handle('sdk-get-messages', async (_e, id: string) => {
+  ipcMain.handle(IpcChannel.SdkGetMessages, async (_e, id: string) => {
     return sdkSessionManager.getMessages(id);
   });
 
-  ipcMain.handle('select-directory', async () => {
+  ipcMain.handle(IpcChannel.SelectDirectory, async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory']
     });
@@ -166,11 +185,12 @@ app.whenReady().then(() => {
     return result.filePaths[0];
   });
 
-  ipcMain.handle('get-log-path', async () => {
+  ipcMain.handle(IpcChannel.GetLogPath, async () => {
     return getLogPath();
   });
 
   createWindow();
+  sessionManager.autoResumeSessions();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

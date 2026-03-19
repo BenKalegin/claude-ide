@@ -6,6 +6,7 @@ interface SessionInfo {
   id: string;
   projectPath: string;
   projectName: string;
+  label?: string;
   claudeSessionId?: string;
   status: 'active' | 'stopped' | 'error' | 'thinking';
   pid?: number;
@@ -35,6 +36,8 @@ interface Window {
       resume: (id: string) => Promise<SessionInfo | null>;
       kill: (id: string) => Promise<boolean>;
       remove: (id: string) => Promise<boolean>;
+      renameProject: (projectPath: string, name: string) => Promise<boolean>;
+      getProjectNames: () => Promise<Record<string, string>>;
       list: () => Promise<SessionInfo[]>;
       getProcesses: (id: string) => Promise<ChildProcess[]>;
       killProcess: (pid: number) => Promise<boolean>;

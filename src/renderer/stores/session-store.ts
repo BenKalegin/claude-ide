@@ -11,6 +11,7 @@ interface SessionState {
   activeSessionId: string | null;
   processes: Map<string, ChildProcess[]>;
   sdkMessages: Map<string, SdkMessage[]>;
+  projectNames: Map<string, string>;
   themeId: ThemeId;
   sidebarWidth: number;
 
@@ -23,6 +24,8 @@ interface SessionState {
   addSdkMessage: (id: string, message: SdkMessage) => void;
   setSdkMessages: (id: string, messages: SdkMessage[]) => void;
   setThemeId: (id: ThemeId) => void;
+  setProjectName: (path: string, name: string) => void;
+  setProjectNames: (names: Record<string, string>) => void;
   resizeSidebar: (delta: number) => void;
 }
 
@@ -31,6 +34,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   activeSessionId: null,
   processes: new Map(),
   sdkMessages: new Map(),
+  projectNames: new Map(),
   themeId: DEFAULT_THEME_ID as ThemeId,
   sidebarWidth: SIDEBAR_DEFAULT,
 
@@ -95,6 +99,19 @@ export const useSessionStore = create<SessionState>((set) => ({
     }),
 
   setThemeId: (id) => set({ themeId: id }),
+
+  setProjectName: (path, name) =>
+    set((state) => {
+      const projectNames = new Map(state.projectNames);
+      projectNames.set(path, name);
+      return { projectNames };
+    }),
+
+  setProjectNames: (names) =>
+    set(() => {
+      const projectNames = new Map(Object.entries(names));
+      return { projectNames };
+    }),
 
   resizeSidebar: (delta) =>
     set((state) => ({

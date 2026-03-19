@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import { IpcChannel, SessionMode } from '../core/constants';
 
 export interface SessionInfo {
   id: string;
@@ -28,85 +29,91 @@ export interface SdkMessage {
 
 const api = {
   sessions: {
-    create: (projectPath: string, mode: 'terminal' | 'sdk' = 'terminal'): Promise<SessionInfo> =>
-      ipcRenderer.invoke('create-session', projectPath, mode),
+    create: (projectPath: string, mode: SessionMode = SessionMode.Terminal): Promise<SessionInfo> =>
+      ipcRenderer.invoke(IpcChannel.CreateSession, projectPath, mode),
 
     resume: (id: string): Promise<SessionInfo | null> =>
-      ipcRenderer.invoke('resume-session', id),
+      ipcRenderer.invoke(IpcChannel.ResumeSession, id),
 
     kill: (id: string): Promise<boolean> =>
-      ipcRenderer.invoke('kill-session', id),
+      ipcRenderer.invoke(IpcChannel.KillSession, id),
 
     remove: (id: string): Promise<boolean> =>
-      ipcRenderer.invoke('remove-session', id),
+      ipcRenderer.invoke(IpcChannel.RemoveSession, id),
+
+    renameProject: (projectPath: string, name: string): Promise<boolean> =>
+      ipcRenderer.invoke(IpcChannel.RenameProject, projectPath, name),
+
+    getProjectNames: (): Promise<Record<string, string>> =>
+      ipcRenderer.invoke(IpcChannel.GetProjectNames),
 
     list: (): Promise<SessionInfo[]> =>
-      ipcRenderer.invoke('list-sessions'),
+      ipcRenderer.invoke(IpcChannel.ListSessions),
 
     getProcesses: (id: string): Promise<ChildProcess[]> =>
-      ipcRenderer.invoke('get-child-processes', id),
+      ipcRenderer.invoke(IpcChannel.GetChildProcesses, id),
 
     killProcess: (pid: number): Promise<boolean> =>
-      ipcRenderer.invoke('kill-child-process', pid),
+      ipcRenderer.invoke(IpcChannel.KillChildProcess, pid),
 
     write: (id: string, data: string): void =>
-      ipcRenderer.send('write-to-session', { id, data }),
+      ipcRenderer.send(IpcChannel.WriteToSession, { id, data }),
 
     resize: (id: string, cols: number, rows: number): void =>
-      ipcRenderer.send('resize-session', { id, cols, rows }),
+      ipcRenderer.send(IpcChannel.ResizeSession, { id, cols, rows }),
 
     onData: (callback: (event: { id: string; data: string }) => void) => {
       const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; data: string }) =>
         callback(payload);
-      ipcRenderer.on('session-data', handler);
-      return () => ipcRenderer.removeListener('session-data', handler);
+      ipcRenderer.on(IpcChannel.SessionData, handler);
+      return () => ipcRenderer.removeListener(IpcChannel.SessionData, handler);
     },
 
     onStatusChange: (callback: (event: { id: string; status: string }) => void) => {
       const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; status: string }) =>
         callback(payload);
-      ipcRenderer.on('session-status', handler);
-      return () => ipcRenderer.removeListener('session-status', handler);
+      ipcRenderer.on(IpcChannel.SessionStatus, handler);
+      return () => ipcRenderer.removeListener(IpcChannel.SessionStatus, handler);
     },
 
     onProcesses: (callback: (event: { id: string; processes: ChildProcess[] }) => void) => {
       const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; processes: ChildProcess[] }) =>
         callback(payload);
-      ipcRenderer.on('session-processes', handler);
-      return () => ipcRenderer.removeListener('session-processes', handler);
+      ipcRenderer.on(IpcChannel.SessionProcesses, handler);
+      return () => ipcRenderer.removeListener(IpcChannel.SessionProcesses, handler);
     }
   },
 
   sdk: {
     sendMessage: (id: string, prompt: string): Promise<void> =>
-      ipcRenderer.invoke('sdk-send-message', id, prompt),
+      ipcRenderer.invoke(IpcChannel.SdkSendMessage, id, prompt),
 
     cancelQuery: (id: string): Promise<void> =>
-      ipcRenderer.invoke('sdk-cancel-query', id),
+      ipcRenderer.invoke(IpcChannel.SdkCancelQuery, id),
 
     getMessages: (id: string): Promise<SdkMessage[]> =>
-      ipcRenderer.invoke('sdk-get-messages', id),
+      ipcRenderer.invoke(IpcChannel.SdkGetMessages, id),
 
     onMessage: (callback: (event: { id: string; message: SdkMessage }) => void) => {
       const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; message: SdkMessage }) =>
         callback(payload);
-      ipcRenderer.on('sdk-message', handler);
-      return () => ipcRenderer.removeListener('sdk-message', handler);
+      ipcRenderer.on(IpcChannel.SdkMessage, handler);
+      return () => ipcRenderer.removeListener(IpcChannel.SdkMessage, handler);
     },
 
     onCost: (callback: (event: { id: string; totalCost: number }) => void) => {
       const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; totalCost: number }) =>
         callback(payload);
-      ipcRenderer.on('sdk-cost', handler);
-      return () => ipcRenderer.removeListener('sdk-cost', handler);
+      ipcRenderer.on(IpcChannel.SdkCost, handler);
+      return () => ipcRenderer.removeListener(IpcChannel.SdkCost, handler);
     },
   },
 
   selectDirectory: (): Promise<string | null> =>
-    ipcRenderer.invoke('select-directory'),
+    ipcRenderer.invoke(IpcChannel.SelectDirectory),
 
   getLogPath: (): Promise<string> =>
-    ipcRenderer.invoke('get-log-path'),
+    ipcRenderer.invoke(IpcChannel.GetLogPath),
 };
 
 contextBridge.exposeInMainWorld('api', api);
