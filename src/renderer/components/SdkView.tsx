@@ -15,11 +15,14 @@ export function SdkView({ sessionId }: Props): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    window.api.sdk.getMessages(sessionId).then((msgs) => {
-      if (msgs.length > 0) {
-        useSessionStore.getState().setSdkMessages(sessionId, msgs);
-      }
-    });
+    const existing = useSessionStore.getState().sdkMessages.get(sessionId);
+    if (!existing || existing.length === 0) {
+      window.api.sdk.getMessages(sessionId).then((msgs) => {
+        if (msgs.length > 0) {
+          useSessionStore.getState().setSdkMessages(sessionId, msgs);
+        }
+      });
+    }
   }, [sessionId]);
 
   useEffect(() => {
