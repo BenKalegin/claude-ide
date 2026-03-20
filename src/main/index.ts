@@ -140,6 +140,8 @@ app.whenReady().then(() => {
       status: s.status,
       mode: SessionMode.Sdk,
       totalCost: s.totalCost,
+      title: s.title,
+      summary: s.summary,
     }));
     return [...terminal, ...sdk];
   });

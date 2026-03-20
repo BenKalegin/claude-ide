@@ -94,7 +94,7 @@ export function TabBar(): React.ReactElement {
               onContextMenu={(e) => handleContextMenu(e, s.id)}
             >
               <span className="tab-dot" style={{ backgroundColor: statusColor(s.status) }} />
-              <span className="tab-name">{s.projectName}</span>
+              <span className="tab-name">{s.title || s.projectName}</span>
               {s.mode === SessionMode.Terminal && (
                 <span className="tab-mode tab-mode-terminal">TTY</span>
               )}

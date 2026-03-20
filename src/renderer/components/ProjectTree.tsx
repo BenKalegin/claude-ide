@@ -72,6 +72,8 @@ export function ProjectTree(): React.ReactElement {
   };
 
   const getSessionLabel = (s: SessionInfo): string => {
+    if (s.title) return s.title;
+    // Fallback: first user message
     const msgs = useSessionStore.getState().sdkMessages.get(s.id);
     if (msgs && msgs.length > 0) {
       const firstUser = msgs.find((m) => m.type === SdkMessageType.User);
@@ -133,6 +135,7 @@ export function ProjectTree(): React.ReactElement {
               key={s.id}
               className={`tree-item ${activeSessionId === s.id ? 'tree-active' : ''}`}
               onClick={() => selectSession(s.id)}
+              title={s.summary || ''}
             >
               <span className="tree-dot" style={{ backgroundColor: statusColor(s.status) }} />
               <span className="tree-name">{getSessionLabel(s)}</span>

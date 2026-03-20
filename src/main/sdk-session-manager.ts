@@ -27,6 +27,8 @@ export interface SdkSessionInfo {
   mode: typeof SessionMode.Sdk;
   messages: SdkMessage[];
   totalCost: number;
+  summary?: string;
+  title?: string;
 }
 
 interface PersistedSdkState {
@@ -36,8 +38,15 @@ interface PersistedSdkState {
     projectName: string;
     claudeSessionId?: string;
     totalCost: number;
+    summary?: string;
+    title?: string;
   }>;
 }
+
+const SUMMARIZE_MODEL = 'claude-haiku-4-5-20251001';
+const TITLE_MAX_CHARS = 40;
+const SUMMARY_MAX_CHARS = 200;
+const ANSWER_PREVIEW_CHARS = 300;
 
 const STATE_DIR = path.join(os.homedir(), '.claude-ide');
 const SDK_STATE_FILE = path.join(STATE_DIR, 'sdk-sessions.json');
@@ -143,6 +152,9 @@ export class SdkSessionManager {
 
       session.status = SessionStatus.Active;
       this.emitStatus(id, SessionStatus.Active);
+
+      // Update title in background (non-blocking)
+      this.updateSessionSummary(session).catch(() => {});
     } catch (err: unknown) {
       if ((err as Error).name === 'AbortError') {
         log.info(`SDK query cancelled: session=${id}`);
@@ -163,6 +175,63 @@ export class SdkSessionManager {
     } finally {
       this.activeQueries.delete(id);
       this.persistState();
+    }
+  }
+
+  private async updateSessionSummary(session: SdkSessionInfo): Promise<void> {
+    try {
+      const lastUser = [...session.messages]
+        .reverse()
+        .find((m) => m.type === SdkMessageType.User);
+      const lastAssistant = [...session.messages]
+        .reverse()
+        .find((m) => m.type === SdkMessageType.Assistant || m.type === SdkMessageType.Result);
+
+      if (!lastUser) return;
+
+      const answerPreview = lastAssistant
+        ? lastAssistant.content.slice(0, ANSWER_PREVIEW_CHARS)
+        : '';
+
+      const existingSummary = session.summary || '';
+
+      const Anthropic = (await import('@anthropic-ai/sdk')).default;
+      const client = new Anthropic();
+
+      const prompt = existingSummary
+        ? `Current session summary: "${existingSummary}"
+New exchange — User: "${lastUser.content}" Assistant: "${answerPreview}"
+Update the summary (1-2 sentences, max ${SUMMARY_MAX_CHARS} chars) blending the new exchange with existing context. Earlier details can fade.
+Also provide a short title (3-6 words, max ${TITLE_MAX_CHARS} chars).
+Reply ONLY as JSON: {"summary": "...", "title": "..."}`
+        : `First exchange — User: "${lastUser.content}" Assistant: "${answerPreview}"
+Summarize this exchange in 1-2 sentences (max ${SUMMARY_MAX_CHARS} chars).
+Also provide a short title (3-6 words, max ${TITLE_MAX_CHARS} chars).
+Reply ONLY as JSON: {"summary": "...", "title": "..."}`;
+
+      const response = await client.messages.create({
+        model: SUMMARIZE_MODEL,
+        max_tokens: 150,
+        messages: [{ role: 'user', content: prompt }],
+      });
+
+      const text = response.content[0].type === 'text' ? response.content[0].text : '';
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return;
+
+      const parsed = JSON.parse(jsonMatch[0]) as { summary?: string; title?: string };
+      if (parsed.summary) {
+        session.summary = parsed.summary.slice(0, SUMMARY_MAX_CHARS);
+      }
+      if (parsed.title) {
+        session.title = parsed.title.slice(0, TITLE_MAX_CHARS);
+      }
+
+      log.info(`Session ${session.id} title: "${session.title}"`);
+      this.emitTitle(session.id, session.title || '', session.summary || '');
+      this.persistState();
+    } catch (err) {
+      log.error(`Failed to summarize session ${session.id}:`, err);
     }
   }
 
@@ -348,6 +417,10 @@ export class SdkSessionManager {
     this.window?.webContents.send(IpcChannel.SdkCost, { id, totalCost });
   }
 
+  private emitTitle(id: string, title: string, summary: string): void {
+    this.window?.webContents.send(IpcChannel.SdkTitle, { id, title, summary });
+  }
+
   persistState(): void {
     try {
       if (!fs.existsSync(STATE_DIR)) {
@@ -360,6 +433,8 @@ export class SdkSessionManager {
           projectName: s.projectName,
           claudeSessionId: s.claudeSessionId,
           totalCost: s.totalCost,
+          summary: s.summary,
+          title: s.title,
         })),
       };
       fs.writeFileSync(SDK_STATE_FILE, JSON.stringify(state, null, 2));
@@ -380,6 +455,8 @@ export class SdkSessionManager {
             status: SessionStatus.Stopped,
             mode: SessionMode.Sdk,
             messages: [],
+            summary: s.summary,
+            title: s.title,
           });
         }
       }

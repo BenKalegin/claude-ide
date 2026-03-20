@@ -50,11 +50,16 @@ export function App(): React.ReactElement {
       updateSession(id, { totalCost });
     });
 
+    const unsubSdkTitle = window.api.sdk.onTitle(({ id, title, summary }) => {
+      updateSession(id, { title, summary });
+    });
+
     return () => {
       unsubStatus();
       unsubProcesses();
       unsubSdkMessage();
       unsubSdkCost();
+      unsubSdkTitle();
     };
   }, []);
 

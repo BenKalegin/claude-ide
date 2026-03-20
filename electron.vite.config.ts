@@ -6,7 +6,7 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        external: ['node-pty', '@anthropic-ai/claude-agent-sdk']
+        external: ['node-pty', '@anthropic-ai/claude-agent-sdk', '@anthropic-ai/sdk']
       }
     }
   },

@@ -141,7 +141,11 @@ export class SessionManager {
     if (session.status === SessionStatus.Active && this.ptys.has(id)) return session;
 
     const claudePath = resolveClaudePath();
-    const pty = ptySpawn(claudePath, session.claudeSessionId ? ['--resume', session.claudeSessionId] : [], {
+    const args = session.claudeSessionId
+      ? ['--resume', session.claudeSessionId]
+      : ['--continue'];
+    log.info(`Resuming session ${id} with args: ${args.join(' ')}`);
+    const pty = ptySpawn(claudePath, args, {
       name: PTY_TERM,
       cols: PTY_DEFAULT_COLS,
       rows: PTY_DEFAULT_ROWS,

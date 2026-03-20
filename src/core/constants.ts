@@ -34,6 +34,7 @@ export const IpcChannel = {
   SessionProcesses: 'session-processes',
   SdkMessage: 'sdk-message',
   SdkCost: 'sdk-cost',
+  SdkTitle: 'sdk-title',
 } as const;
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
 
