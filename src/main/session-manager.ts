@@ -26,6 +26,8 @@ export interface SessionInfo {
   status: SessionStatus;
   pid?: number;
   mode: SessionMode;
+  title?: string;
+  summary?: string;
 }
 
 interface PersistedState {
@@ -35,8 +37,16 @@ interface PersistedState {
     projectName: string;
     claudeSessionId?: string;
     mode: SessionMode;
+    title?: string;
+    summary?: string;
   }>;
 }
+
+const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+const TITLE_MAX_CHARS = 40;
+const SUMMARY_MAX_CHARS = 200;
+const SUMMARIZE_MODEL = 'haiku';
+const TITLE_UPDATE_INTERVAL = 30000;
 
 const STATE_DIR = path.join(os.homedir(), '.claude-ide');
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
@@ -46,6 +56,7 @@ export class SessionManager {
   private ptys: Map<string, IPty> = new Map();
   private window: BrowserWindow | null = null;
   private processTimer: ReturnType<typeof setInterval> | null = null;
+  private titleTimer: ReturnType<typeof setInterval> | null = null;
 
   setWindow(win: BrowserWindow): void {
     this.window = win;
@@ -250,6 +261,8 @@ export class SessionManager {
           projectName: s.projectName,
           claudeSessionId: s.claudeSessionId,
           mode: s.mode,
+          title: s.title,
+          summary: s.summary,
         }))
       };
       fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -287,6 +300,92 @@ export class SessionManager {
     }
   }
 
+  startTitleUpdater(): void {
+    // Periodically update titles for TTY sessions by reading Claude Code's session files
+    this.titleTimer = setInterval(() => {
+      for (const session of this.sessions.values()) {
+        if (session.mode === SessionMode.Terminal && session.status === SessionStatus.Active && !session.title) {
+          this.updateTtyTitle(session).catch(() => {});
+        }
+      }
+    }, TITLE_UPDATE_INTERVAL);
+
+    // Also run once immediately for sessions that need backfill
+    for (const session of this.sessions.values()) {
+      if (session.mode === SessionMode.Terminal && !session.title) {
+        this.updateTtyTitle(session).catch(() => {});
+      }
+    }
+  }
+
+  private async updateTtyTitle(session: SessionInfo): Promise<void> {
+    try {
+      // Find Claude Code's most recent session for this project's cwd
+      const encodedCwd = session.projectPath.replace(/[^a-zA-Z0-9]/g, '-');
+      const sessionDir = path.join(CLAUDE_PROJECTS_DIR, encodedCwd);
+      if (!fs.existsSync(sessionDir)) return;
+
+      const files = fs.readdirSync(sessionDir)
+        .filter((f) => f.endsWith('.jsonl'))
+        .map((f) => ({ name: f, mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+
+      if (files.length === 0) return;
+
+      const sessionFile = path.join(sessionDir, files[0].name);
+      const lines = fs.readFileSync(sessionFile, 'utf-8').trim().split('\n');
+
+      // Extract recent user messages
+      const userMessages: string[] = [];
+      for (const line of lines.slice(-50)) {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.type === 'human' || msg.role === 'user') {
+            const content = typeof msg.content === 'string'
+              ? msg.content
+              : Array.isArray(msg.content)
+                ? msg.content.filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text).join(' ')
+                : '';
+            if (content) userMessages.push(content.slice(0, 100));
+          }
+        } catch { /* skip malformed lines */ }
+      }
+
+      if (userMessages.length === 0) return;
+
+      const excerpt = userMessages.slice(-3).join('\n');
+      const prompt = `These are the last few user messages in a coding session:\n${excerpt}\nProvide a short title (3-6 words, max ${TITLE_MAX_CHARS} chars) summarizing what this session is about.\nReply ONLY as JSON: {"title": "..."}`;
+
+      const claudePath = resolveClaudePath();
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+
+      const { stdout } = await execFileAsync(claudePath, [
+        '-p', prompt,
+        '--model', SUMMARIZE_MODEL,
+        '--output-format', 'text',
+      ], { timeout: 30000 });
+
+      const jsonMatch = stdout.trim().match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return;
+
+      const parsed = JSON.parse(jsonMatch[0]) as { title?: string };
+      if (parsed.title) {
+        session.title = parsed.title.slice(0, TITLE_MAX_CHARS);
+        log.info(`TTY session ${session.id} title: "${session.title}"`);
+        this.window?.webContents.send(IpcChannel.SdkTitle, {
+          id: session.id,
+          title: session.title,
+          summary: '',
+        });
+        this.persistState();
+      }
+    } catch (err) {
+      log.error(`Failed to update TTY title for ${session.id}:`, err);
+    }
+  }
+
   startProcessMonitor(): void {
     this.processTimer = setInterval(() => {
       for (const session of this.sessions.values()) {
@@ -302,6 +401,10 @@ export class SessionManager {
     if (this.processTimer) {
       clearInterval(this.processTimer);
       this.processTimer = null;
+    }
+    if (this.titleTimer) {
+      clearInterval(this.titleTimer);
+      this.titleTimer = null;
     }
   }
 

@@ -43,7 +43,7 @@ interface PersistedSdkState {
   }>;
 }
 
-const SUMMARIZE_MODEL = 'claude-haiku-4-5-20251001';
+const SUMMARIZE_MODEL = 'haiku';
 const TITLE_MAX_CHARS = 40;
 const SUMMARY_MAX_CHARS = 200;
 const ANSWER_PREVIEW_CHARS = 300;
@@ -195,27 +195,22 @@ export class SdkSessionManager {
 
       const existingSummary = session.summary || '';
 
-      const Anthropic = (await import('@anthropic-ai/sdk')).default;
-      const client = new Anthropic();
-
       const prompt = existingSummary
-        ? `Current session summary: "${existingSummary}"
-New exchange — User: "${lastUser.content}" Assistant: "${answerPreview}"
-Update the summary (1-2 sentences, max ${SUMMARY_MAX_CHARS} chars) blending the new exchange with existing context. Earlier details can fade.
-Also provide a short title (3-6 words, max ${TITLE_MAX_CHARS} chars).
-Reply ONLY as JSON: {"summary": "...", "title": "..."}`
-        : `First exchange — User: "${lastUser.content}" Assistant: "${answerPreview}"
-Summarize this exchange in 1-2 sentences (max ${SUMMARY_MAX_CHARS} chars).
-Also provide a short title (3-6 words, max ${TITLE_MAX_CHARS} chars).
-Reply ONLY as JSON: {"summary": "...", "title": "..."}`;
+        ? `Current session summary: "${existingSummary}"\nNew exchange — User: "${lastUser.content}" Assistant: "${answerPreview}"\nUpdate the summary (1-2 sentences, max ${SUMMARY_MAX_CHARS} chars) blending the new exchange with existing context. Earlier details can fade.\nAlso provide a short title (3-6 words, max ${TITLE_MAX_CHARS} chars).\nReply ONLY as JSON: {"summary": "...", "title": "..."}`
+        : `First exchange — User: "${lastUser.content}" Assistant: "${answerPreview}"\nSummarize this exchange in 1-2 sentences (max ${SUMMARY_MAX_CHARS} chars).\nAlso provide a short title (3-6 words, max ${TITLE_MAX_CHARS} chars).\nReply ONLY as JSON: {"summary": "...", "title": "..."}`;
 
-      const response = await client.messages.create({
-        model: SUMMARIZE_MODEL,
-        max_tokens: 150,
-        messages: [{ role: 'user', content: prompt }],
-      });
+      const claudePath = this.resolveClaudePath();
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
 
-      const text = response.content[0].type === 'text' ? response.content[0].text : '';
+      const { stdout } = await execFileAsync(claudePath, [
+        '-p', prompt,
+        '--model', SUMMARIZE_MODEL,
+        '--output-format', 'text',
+      ], { timeout: 30000 });
+
+      const text = stdout.trim();
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) return;
 
@@ -232,6 +227,15 @@ Reply ONLY as JSON: {"summary": "...", "title": "..."}`;
       this.persistState();
     } catch (err) {
       log.error(`Failed to summarize session ${session.id}:`, err);
+    }
+  }
+
+  private resolveClaudePath(): string {
+    try {
+      const { execSync: execSyncLocal } = require('child_process');
+      return execSyncLocal('which claude', { encoding: 'utf-8', shell: '/bin/zsh' }).trim();
+    } catch {
+      return 'claude';
     }
   }
 
@@ -460,9 +464,24 @@ Reply ONLY as JSON: {"summary": "...", "title": "..."}`;
           });
         }
       }
+      // Backfill titles for sessions that have messages but no title
+      this.backfillTitles();
       return this.getAll();
     } catch {
       return [];
+    }
+  }
+
+  private backfillTitles(): void {
+    for (const session of this.sessions.values()) {
+      if (session.title) continue;
+      // Load messages from disk to check if there's content
+      const msgs = this.loadMessages(session.id);
+      if (msgs.length > 0) {
+        session.messages = msgs;
+        log.info(`Backfilling title for session ${session.id}`);
+        this.updateSessionSummary(session).catch(() => {});
+      }
     }
   }
 

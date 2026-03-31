@@ -17,6 +17,7 @@ export function ProjectTree(): React.ReactElement {
   const addSession = useSessionStore((s) => s.addSession);
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+  const [addMenuPath, setAddMenuPath] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const groups = useMemo(() => {
@@ -64,12 +65,19 @@ export function ProjectTree(): React.ReactElement {
     else if (e.key === 'Escape') setEditingPath(null);
   };
 
-  const handleNewSession = async (e: React.MouseEvent, projectPath: string) => {
-    e.stopPropagation();
-    const session = await window.api.sessions.create(projectPath, SessionMode.Sdk);
+  const handleNewSession = async (projectPath: string, mode: SessionMode) => {
+    setAddMenuPath(null);
+    const session = await window.api.sessions.create(projectPath, mode);
     addSession(session);
     selectSession(session.id);
   };
+
+  useEffect(() => {
+    if (!addMenuPath) return;
+    const close = () => setAddMenuPath(null);
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [addMenuPath]);
 
   const getSessionLabel = (s: SessionInfo): string => {
     if (s.title) return s.title;
@@ -82,7 +90,7 @@ export function ProjectTree(): React.ReactElement {
         return text.length < firstUser.content.length ? text + '...' : text;
       }
     }
-    return s.mode === SessionMode.Terminal ? 'Terminal session' : 'New session';
+    return s.mode === SessionMode.Terminal ? `${s.projectName} (tty)` : 'New session';
   };
 
   const statusColor = (status: string) => {
@@ -126,10 +134,20 @@ export function ProjectTree(): React.ReactElement {
               <button
                 className="tree-action-btn"
                 title="New session"
-                onClick={(e) => handleNewSession(e, group.projectPath)}
+                onClick={(e) => { e.stopPropagation(); setAddMenuPath(addMenuPath === group.projectPath ? null : group.projectPath); }}
               >+</button>
             </div>
           </div>
+          {addMenuPath === group.projectPath && (
+            <div className="tree-add-menu" onClick={(e) => e.stopPropagation()}>
+              <button onClick={() => handleNewSession(group.projectPath, SessionMode.Sdk)}>
+                <span className="mode-icon">&#9671;</span> SDK
+              </button>
+              <button onClick={() => handleNewSession(group.projectPath, SessionMode.Terminal)}>
+                <span className="mode-icon">&#9654;</span> Terminal
+              </button>
+            </div>
+          )}
           {group.sessions.map((s) => (
             <div
               key={s.id}

@@ -191,8 +191,13 @@ app.whenReady().then(() => {
     return getLogPath();
   });
 
-  createWindow();
-  sessionManager.autoResumeSessions();
+  const win = createWindow();
+
+  // Wait for renderer to load before resuming sessions
+  win.webContents.on('did-finish-load', () => {
+    sessionManager.autoResumeSessions();
+    sessionManager.startTitleUpdater();
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
