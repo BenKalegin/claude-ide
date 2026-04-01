@@ -301,57 +301,79 @@ export class SessionManager {
   }
 
   startTitleUpdater(): void {
-    // Periodically update titles for TTY sessions by reading Claude Code's session files
+    log.info('Starting TTY title updater');
+
+    // Run immediately for all TTY sessions without titles
+    for (const session of this.sessions.values()) {
+      if (session.mode === SessionMode.Terminal && !session.title) {
+        log.info(`Backfilling TTY title for ${session.id} (${session.projectName})`);
+        this.updateTtyTitle(session).catch(() => {});
+      }
+    }
+
+    // Periodically update titles for active TTY sessions
     this.titleTimer = setInterval(() => {
       for (const session of this.sessions.values()) {
-        if (session.mode === SessionMode.Terminal && session.status === SessionStatus.Active && !session.title) {
+        if (session.mode === SessionMode.Terminal && session.status === SessionStatus.Active) {
           this.updateTtyTitle(session).catch(() => {});
         }
       }
     }, TITLE_UPDATE_INTERVAL);
-
-    // Also run once immediately for sessions that need backfill
-    for (const session of this.sessions.values()) {
-      if (session.mode === SessionMode.Terminal && !session.title) {
-        this.updateTtyTitle(session).catch(() => {});
-      }
-    }
   }
 
   private async updateTtyTitle(session: SessionInfo): Promise<void> {
     try {
-      // Find Claude Code's most recent session for this project's cwd
       const encodedCwd = session.projectPath.replace(/[^a-zA-Z0-9]/g, '-');
       const sessionDir = path.join(CLAUDE_PROJECTS_DIR, encodedCwd);
-      if (!fs.existsSync(sessionDir)) return;
+      log.debug(`TTY title: checking ${sessionDir}`);
+      if (!fs.existsSync(sessionDir)) {
+        log.debug(`TTY title: dir not found for ${session.projectName}`);
+        return;
+      }
 
       const files = fs.readdirSync(sessionDir)
         .filter((f) => f.endsWith('.jsonl'))
         .map((f) => ({ name: f, mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
         .sort((a, b) => b.mtime - a.mtime);
 
-      if (files.length === 0) return;
+      if (files.length === 0) {
+        log.debug(`TTY title: no JSONL files for ${session.projectName}`);
+        return;
+      }
 
       const sessionFile = path.join(sessionDir, files[0].name);
       const lines = fs.readFileSync(sessionFile, 'utf-8').trim().split('\n');
+      log.debug(`TTY title: reading ${files[0].name} (${lines.length} lines)`);
 
-      // Extract recent user messages
       const userMessages: string[] = [];
-      for (const line of lines.slice(-50)) {
+      // Scan all lines — user messages can be sparse among tool calls and file snapshots
+      for (const line of lines) {
         try {
           const msg = JSON.parse(line);
-          if (msg.type === 'human' || msg.role === 'user') {
-            const content = typeof msg.content === 'string'
-              ? msg.content
-              : Array.isArray(msg.content)
-                ? msg.content.filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text).join(' ')
-                : '';
-            if (content) userMessages.push(content.slice(0, 100));
+          if (msg.type !== 'user') continue;
+          const raw = msg.message?.content ?? msg.content;
+          let text = '';
+          if (typeof raw === 'string') {
+            text = raw;
+          } else if (Array.isArray(raw)) {
+            text = raw
+              .filter((b: { type: string }) => b.type === 'text')
+              .map((b: { text: string }) => b.text)
+              .join(' ');
+          }
+          // Skip system/meta messages
+          if (text && text.length > 10 && !text.startsWith('<')) {
+            userMessages.push(text.slice(0, 100));
           }
         } catch { /* skip malformed lines */ }
       }
 
-      if (userMessages.length === 0) return;
+      if (userMessages.length === 0) {
+        log.debug(`TTY title: no user messages found for ${session.projectName}`);
+        return;
+      }
+
+      log.info(`TTY title: generating for ${session.projectName} (${userMessages.length} user msgs found)`);
 
       const excerpt = userMessages.slice(-3).join('\n');
       const prompt = `These are the last few user messages in a coding session:\n${excerpt}\nProvide a short title (3-6 words, max ${TITLE_MAX_CHARS} chars) summarizing what this session is about.\nReply ONLY as JSON: {"title": "..."}`;
