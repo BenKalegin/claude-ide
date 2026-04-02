@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { useSessionStore } from '../stores/session-store';
-import { SessionMode, SessionStatus, SdkMessageType } from '../../core/constants';
+import { SessionMode, SessionStatus, SessionActivity, SdkMessageType } from '../../core/constants';
 
 interface ProjectGroup {
   projectPath: string;
@@ -102,6 +102,15 @@ export function ProjectTree(): React.ReactElement {
     }
   };
 
+  const formatActivity = (activity: string, detail?: string): string => {
+    switch (activity) {
+      case SessionActivity.Thinking: return 'thinking...';
+      case SessionActivity.UsingTool: return detail ? `${detail}` : 'tool...';
+      case SessionActivity.Streaming: return 'writing...';
+      default: return '';
+    }
+  };
+
   if (groups.length === 0) {
     return <div className="tree-empty">No active sessions</div>;
   }
@@ -157,6 +166,9 @@ export function ProjectTree(): React.ReactElement {
             >
               <span className="tree-dot" style={{ backgroundColor: statusColor(s.status) }} />
               <span className="tree-name">{getSessionLabel(s)}</span>
+              {s.activity && s.activity !== SessionActivity.Idle && (
+                <span className="tree-activity">{formatActivity(s.activity, s.activityDetail)}</span>
+              )}
               {s.mode === SessionMode.Terminal && (
                 <span className="tree-mode tree-mode-terminal">TTY</span>
               )}

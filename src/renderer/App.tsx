@@ -54,12 +54,17 @@ export function App(): React.ReactElement {
       updateSession(id, { title, summary });
     });
 
+    const unsubSdkActivity = window.api.sdk.onActivity(({ id, activity, detail }) => {
+      updateSession(id, { activity, activityDetail: detail });
+    });
+
     return () => {
       unsubStatus();
       unsubProcesses();
       unsubSdkMessage();
       unsubSdkCost();
       unsubSdkTitle();
+      unsubSdkActivity();
     };
   }, []);
 

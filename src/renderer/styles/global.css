@@ -727,6 +727,14 @@ html, body, #root {
   color: var(--color-green);
 }
 
+.tree-activity {
+  font-size: 10px;
+  font-style: italic;
+  color: var(--color-yellow);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
 .tree-mode-sdk {
   color: var(--color-blue);
 }

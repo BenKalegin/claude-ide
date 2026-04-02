@@ -114,6 +114,13 @@ const api = {
       ipcRenderer.on(IpcChannel.SdkTitle, handler);
       return () => ipcRenderer.removeListener(IpcChannel.SdkTitle, handler);
     },
+
+    onActivity: (callback: (event: { id: string; activity: string; detail?: string }) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; activity: string; detail?: string }) =>
+        callback(payload);
+      ipcRenderer.on(IpcChannel.SdkActivity, handler);
+      return () => ipcRenderer.removeListener(IpcChannel.SdkActivity, handler);
+    },
   },
 
   selectDirectory: (): Promise<string | null> =>

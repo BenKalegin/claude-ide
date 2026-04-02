@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { createLogger } from './logger';
-import { SessionMode, SessionStatus, SdkMessageType, IpcChannel } from '../core/constants';
+import { SessionMode, SessionStatus, SessionActivity, SdkMessageType, IpcChannel } from '../core/constants';
 
 const log = createLogger('sdk');
 
@@ -29,6 +29,10 @@ export interface SdkSessionInfo {
   totalCost: number;
   summary?: string;
   title?: string;
+  activity?: SessionActivity;
+  activityDetail?: string;
+  contextTokens?: number;
+  maxContextTokens?: number;
 }
 
 interface PersistedSdkState {
@@ -107,6 +111,7 @@ export class SdkSessionManager {
         cwd: session.projectPath,
         allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep', 'Agent'],
         permissionMode: 'acceptEdits',
+        includePartialMessages: true,
       };
 
       if (session.claudeSessionId) {
@@ -120,6 +125,13 @@ export class SdkSessionManager {
       })) {
         if (controller.signal.aborted) break;
 
+        // Handle streaming events for activity tracking
+        const msg = message as Record<string, unknown>;
+        if (msg.type === 'stream_event') {
+          this.handleStreamEvent(id, session, msg.event as Record<string, unknown>);
+          continue;
+        }
+
         const sdkMsg = this.transformMessage(message);
         if (sdkMsg) {
           session.messages.push(sdkMsg);
@@ -132,6 +144,14 @@ export class SdkSessionManager {
           if (sdkMsg.cost) {
             session.totalCost += sdkMsg.cost.totalUsd;
             this.emitCost(id, session.totalCost);
+          }
+
+          // Track context from result messages
+          const resultData = message as Record<string, unknown>;
+          if (sdkMsg.type === SdkMessageType.Result && resultData.usage) {
+            const usage = resultData.usage as Record<string, number>;
+            session.contextTokens = (usage.inputTokens || 0) + (usage.outputTokens || 0);
+            session.maxContextTokens = usage.contextWindow || 0;
           }
         }
       }
@@ -151,7 +171,10 @@ export class SdkSessionManager {
       }
 
       session.status = SessionStatus.Active;
+      session.activity = SessionActivity.Idle;
+      session.activityDetail = undefined;
       this.emitStatus(id, SessionStatus.Active);
+      this.emitActivity(id, SessionActivity.Idle);
 
       // Update title in background (non-blocking)
       this.updateSessionSummary(session).catch(() => {});
@@ -419,6 +442,48 @@ export class SdkSessionManager {
 
   private emitCost(id: string, totalCost: number): void {
     this.window?.webContents.send(IpcChannel.SdkCost, { id, totalCost });
+  }
+
+  private emitActivity(id: string, activity: SessionActivity, detail?: string): void {
+    this.window?.webContents.send(IpcChannel.SdkActivity, { id, activity, detail });
+  }
+
+  private handleStreamEvent(id: string, session: SdkSessionInfo, event: Record<string, unknown>): void {
+    const eventType = event.type as string;
+
+    switch (eventType) {
+      case 'content_block_start': {
+        const block = event.content_block as Record<string, unknown> | undefined;
+        if (!block) break;
+        if (block.type === 'thinking') {
+          session.activity = SessionActivity.Thinking;
+          session.activityDetail = undefined;
+          this.emitActivity(id, SessionActivity.Thinking);
+        } else if (block.type === 'tool_use') {
+          const toolName = (block.name as string) || 'tool';
+          session.activity = SessionActivity.UsingTool;
+          session.activityDetail = toolName;
+          this.emitActivity(id, SessionActivity.UsingTool, toolName);
+        } else if (block.type === 'text') {
+          session.activity = SessionActivity.Streaming;
+          session.activityDetail = undefined;
+          this.emitActivity(id, SessionActivity.Streaming);
+        }
+        break;
+      }
+      case 'content_block_stop': {
+        session.activity = SessionActivity.Thinking;
+        session.activityDetail = undefined;
+        this.emitActivity(id, SessionActivity.Thinking);
+        break;
+      }
+      case 'message_stop': {
+        session.activity = SessionActivity.Idle;
+        session.activityDetail = undefined;
+        this.emitActivity(id, SessionActivity.Idle);
+        break;
+      }
+    }
   }
 
   private emitTitle(id: string, title: string, summary: string): void {

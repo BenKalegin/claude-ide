@@ -35,6 +35,7 @@ export const IpcChannel = {
   SdkMessage: 'sdk-message',
   SdkCost: 'sdk-cost',
   SdkTitle: 'sdk-title',
+  SdkActivity: 'sdk-activity',
 } as const;
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
 
@@ -47,6 +48,14 @@ export const SdkMessageType = {
   ToolResult: 'tool_result',
 } as const;
 export type SdkMessageType = (typeof SdkMessageType)[keyof typeof SdkMessageType];
+
+export const SessionActivity = {
+  Idle: 'idle',
+  Thinking: 'thinking',
+  UsingTool: 'using_tool',
+  Streaming: 'streaming',
+} as const;
+export type SessionActivity = (typeof SessionActivity)[keyof typeof SessionActivity];
 
 export const PTY_TERM = 'xterm-256color';
 export const PTY_DEFAULT_COLS = 120;
