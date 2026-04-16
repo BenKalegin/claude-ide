@@ -5,7 +5,7 @@ import * as os from 'os';
 import log, { createLogger, getLogPath } from './logger';
 import { SessionManager } from './session-manager';
 import { SdkSessionManager } from './sdk-session-manager';
-import { IpcChannel, SessionMode, SessionStatus } from '../core/constants';
+import { IpcChannel, SessionMode, SessionStatus, ClaudeModel } from '../core/constants';
 
 const mainLog = createLogger('main');
 const ipcLog = createLogger('ipc');
@@ -174,6 +174,11 @@ app.whenReady().then(() => {
     sdkSessionManager.cancelQuery(id);
   });
 
+  ipcMain.handle(IpcChannel.SdkInterruptQuery, async (_e, id: string) => {
+    ipcLog.info('sdk-interrupt-query', id);
+    return sdkSessionManager.interruptQuery(id);
+  });
+
   ipcMain.handle(IpcChannel.SdkGetMessages, async (_e, id: string) => {
     return sdkSessionManager.getMessages(id);
   });
@@ -189,6 +194,20 @@ app.whenReady().then(() => {
 
   ipcMain.handle(IpcChannel.GetLogPath, async () => {
     return getLogPath();
+  });
+
+  ipcMain.handle(IpcChannel.GetUsageHistory, async () => {
+    return sdkSessionManager.getUsageSummary();
+  });
+
+  ipcMain.handle(IpcChannel.SetSessionModel, async (_e, id: string, model: ClaudeModel) => {
+    const sdkSession = sdkSessionManager.getSession(id);
+    if (sdkSession) {
+      sdkSessionManager.setModel(id, model);
+      return true;
+    }
+    sessionManager.setModel(id, model);
+    return true;
   });
 
   const win = createWindow();

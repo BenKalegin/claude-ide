@@ -1,6 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IpcChannel, SessionMode } from '../core/constants';
 
+export interface UsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  tokensPerHour: number;
+  windowMs: number;
+}
+
 export interface SessionInfo {
   id: string;
   projectPath: string;
@@ -10,6 +19,7 @@ export interface SessionInfo {
   pid?: number;
   mode: 'terminal' | 'sdk';
   totalCost?: number;
+  model?: string;
 }
 
 export interface ChildProcess {
@@ -62,6 +72,9 @@ const api = {
     resize: (id: string, cols: number, rows: number): void =>
       ipcRenderer.send(IpcChannel.ResizeSession, { id, cols, rows }),
 
+    setModel: (id: string, model: string): Promise<boolean> =>
+      ipcRenderer.invoke(IpcChannel.SetSessionModel, id, model),
+
     onData: (callback: (event: { id: string; data: string }) => void) => {
       const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; data: string }) =>
         callback(payload);
@@ -90,6 +103,9 @@ const api = {
 
     cancelQuery: (id: string): Promise<void> =>
       ipcRenderer.invoke(IpcChannel.SdkCancelQuery, id),
+
+    interruptQuery: (id: string): Promise<boolean> =>
+      ipcRenderer.invoke(IpcChannel.SdkInterruptQuery, id),
 
     getMessages: (id: string): Promise<SdkMessage[]> =>
       ipcRenderer.invoke(IpcChannel.SdkGetMessages, id),
@@ -128,6 +144,18 @@ const api = {
 
   getLogPath: (): Promise<string> =>
     ipcRenderer.invoke(IpcChannel.GetLogPath),
+
+  usage: {
+    getSummary: (): Promise<UsageSummary> =>
+      ipcRenderer.invoke(IpcChannel.GetUsageHistory),
+
+    onUpdate: (callback: (summary: UsageSummary) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, payload: UsageSummary) =>
+        callback(payload);
+      ipcRenderer.on(IpcChannel.UsageUpdate, handler);
+      return () => ipcRenderer.removeListener(IpcChannel.UsageUpdate, handler);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld('api', api);

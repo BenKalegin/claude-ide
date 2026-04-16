@@ -14,6 +14,7 @@ interface SessionState {
   projectNames: Map<string, string>;
   themeId: ThemeId;
   sidebarWidth: number;
+  usageSummary: UsageSummary | null;
 
   setSessions: (sessions: SessionInfo[]) => void;
   updateSession: (id: string, updates: Partial<SessionInfo>) => void;
@@ -27,6 +28,7 @@ interface SessionState {
   setProjectName: (path: string, name: string) => void;
   setProjectNames: (names: Record<string, string>) => void;
   resizeSidebar: (delta: number) => void;
+  setUsageSummary: (summary: UsageSummary) => void;
 }
 
 export const useSessionStore = create<SessionState>((set) => ({
@@ -37,6 +39,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   projectNames: new Map(),
   themeId: DEFAULT_THEME_ID as ThemeId,
   sidebarWidth: SIDEBAR_DEFAULT,
+  usageSummary: null,
 
   setSessions: (sessions) =>
     set(() => {
@@ -117,4 +120,6 @@ export const useSessionStore = create<SessionState>((set) => ({
     set((state) => ({
       sidebarWidth: Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, state.sidebarWidth + delta)),
     })),
+
+  setUsageSummary: (summary) => set({ usageSummary: summary }),
 }));

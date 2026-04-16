@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { TabBar } from './components/TabBar';
 import { ProjectTree } from './components/ProjectTree';
 import { TerminalView } from './components/TerminalView';
 import { SdkView } from './components/SdkView';
 import { ProcessMonitor } from './components/ProcessMonitor';
 import { Resizer } from './components/Resizer';
 import { SettingsDialog } from './components/SettingsDialog';
+import { UsageBar } from './components/UsageBar';
+import { SessionHeader } from './components/SessionHeader';
 import { useSessionStore } from './stores/session-store';
 import { applyTheme } from './lib/theme-applier';
 import { SessionMode } from '../core/constants';
@@ -22,11 +23,30 @@ export function App(): React.ReactElement {
   const resizeSidebar = useSessionStore((s) => s.resizeSidebar);
   const themeId = useSessionStore((s) => s.themeId);
 
+  const addSession = useSessionStore((s) => s.addSession);
+  const selectSession = useSessionStore((s) => s.selectSession);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showNewMenu, setShowNewMenu] = useState(false);
+
+  const handleNewProject = async (mode: SessionMode) => {
+    setShowNewMenu(false);
+    const dir = await window.api.selectDirectory();
+    if (!dir) return;
+    const session = await window.api.sessions.create(dir, mode);
+    addSession(session);
+    selectSession(session.id);
+  };
 
   useEffect(() => {
     applyTheme(themeId);
   }, []);
+
+  useEffect(() => {
+    if (!showNewMenu) return;
+    const close = () => setShowNewMenu(false);
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [showNewMenu]);
 
   useEffect(() => {
     window.api.sessions.list().then(setSessions);
@@ -76,15 +96,35 @@ export function App(): React.ReactElement {
       <div className="sidebar-v2" style={{ width: sidebarWidth, minWidth: sidebarWidth }}>
         <div className="sidebar-v2-header">
           <span className="sidebar-v2-title">Sessions</span>
-          <button className="btn-settings" onClick={() => setSettingsOpen(true)} title="Settings">
-            &#9881;
-          </button>
+          <div className="sidebar-v2-actions">
+            <div className="sidebar-new-wrapper">
+              <button
+                className="btn-new-project"
+                onClick={(e) => { e.stopPropagation(); setShowNewMenu(!showNewMenu); }}
+                title="New project session"
+              >+</button>
+              {showNewMenu && (
+                <div className="sidebar-new-menu" onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => handleNewProject(SessionMode.Sdk)}>
+                    <span className="mode-icon">&#9671;</span> SDK
+                  </button>
+                  <button onClick={() => handleNewProject(SessionMode.Terminal)}>
+                    <span className="mode-icon">&#9654;</span> Terminal
+                  </button>
+                </div>
+              )}
+            </div>
+            <button className="btn-settings" onClick={() => setSettingsOpen(true)} title="Settings">
+              &#9881;
+            </button>
+          </div>
         </div>
         <ProjectTree />
+        <UsageBar />
       </div>
       <Resizer direction="horizontal" onResize={resizeSidebar} />
       <div className="main-area">
-        <TabBar />
+        {activeSessionId && <SessionHeader sessionId={activeSessionId} />}
         <div className="content-area">
           <div className="view-area">
             {!activeSessionId ? (

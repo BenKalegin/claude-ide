@@ -2,6 +2,15 @@
 
 type SessionMode = 'terminal' | 'sdk';
 
+interface UsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  tokensPerHour: number;
+  windowMs: number;
+}
+
 interface SessionInfo {
   id: string;
   projectPath: string;
@@ -12,6 +21,7 @@ interface SessionInfo {
   pid?: number;
   mode: SessionMode;
   totalCost?: number;
+  model?: string;
   title?: string;
   summary?: string;
   activity?: string;
@@ -47,6 +57,7 @@ interface Window {
       killProcess: (pid: number) => Promise<boolean>;
       write: (id: string, data: string) => void;
       resize: (id: string, cols: number, rows: number) => void;
+      setModel: (id: string, model: string) => Promise<boolean>;
       onData: (callback: (event: { id: string; data: string }) => void) => () => void;
       onStatusChange: (callback: (event: { id: string; status: string }) => void) => () => void;
       onProcesses: (callback: (event: { id: string; processes: ChildProcess[] }) => void) => () => void;
@@ -54,6 +65,7 @@ interface Window {
     sdk: {
       sendMessage: (id: string, prompt: string) => Promise<void>;
       cancelQuery: (id: string) => Promise<void>;
+      interruptQuery: (id: string) => Promise<boolean>;
       getMessages: (id: string) => Promise<SdkMessage[]>;
       onMessage: (callback: (event: { id: string; message: SdkMessage }) => void) => () => void;
       onCost: (callback: (event: { id: string; totalCost: number }) => void) => () => void;
@@ -62,5 +74,9 @@ interface Window {
     };
     selectDirectory: () => Promise<string | null>;
     getLogPath: () => Promise<string>;
+    usage: {
+      getSummary: () => Promise<UsageSummary>;
+      onUpdate: (callback: (summary: UsageSummary) => void) => () => void;
+    };
   };
 }

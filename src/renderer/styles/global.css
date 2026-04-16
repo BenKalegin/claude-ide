@@ -401,6 +401,64 @@ html, body, #root {
   -webkit-app-region: no-drag;
 }
 
+.sidebar-v2-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar-new-wrapper {
+  position: relative;
+}
+
+.btn-new-project {
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s;
+  line-height: 1;
+}
+
+.btn-new-project:hover {
+  color: var(--color-text);
+}
+
+.sidebar-new-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 120px;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.sidebar-new-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: var(--color-text);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-new-menu button:hover {
+  background: var(--color-hover);
+}
+
 .btn-settings {
   background: none;
   border: none;
@@ -429,6 +487,51 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+
+.session-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 12px;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+
+.session-header-project {
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.session-header-sep {
+  color: var(--color-text-muted);
+  opacity: 0.4;
+}
+
+.session-header-name {
+  color: var(--color-text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-header-model {
+  margin-left: auto;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+}
+
+.session-header-model:hover {
+  border-color: var(--color-blue);
 }
 
 .content-area {
@@ -727,6 +830,63 @@ html, body, #root {
   color: var(--color-green);
 }
 
+.tree-close-btn {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  margin-left: auto;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.tree-close-btn:hover {
+  color: var(--color-red);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tree-item:hover .tree-close-btn {
+  display: block;
+}
+
+.tree-confirm-close {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.tree-confirm-yes,
+.tree-confirm-no {
+  background: none;
+  border: none;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.tree-confirm-yes {
+  color: var(--color-red);
+}
+
+.tree-confirm-yes:hover {
+  background: rgba(255, 80, 80, 0.15);
+}
+
+.tree-confirm-no {
+  color: var(--color-text-muted);
+}
+
+.tree-confirm-no:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .tree-activity {
   font-size: 10px;
   font-style: italic;
@@ -779,6 +939,30 @@ html, body, #root {
   padding: 1px 4px;
   outline: none;
   min-width: 0;
+}
+
+/* Usage bar */
+.usage-bar {
+  padding: 8px 12px;
+  border-top: 1px solid var(--color-border);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.usage-row {
+  display: flex;
+  justify-content: space-between;
+  line-height: 1.6;
+}
+
+.usage-label {
+  opacity: 0.6;
+}
+
+.usage-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
 }
 
 /* Mode badges */
@@ -926,13 +1110,16 @@ html, body, #root {
 }
 
 .chat-row-notice {
-  align-items: center;
+  align-items: flex-start;
 }
 
 .chat-notice {
   font-size: 12px;
+  font-family: inherit;
   color: var(--color-yellow);
   padding: 6px 12px;
+  margin: 0;
+  white-space: pre-wrap;
   background: color-mix(in srgb, var(--color-yellow) 8%, transparent);
   border-radius: 8px;
 }
@@ -959,6 +1146,13 @@ html, body, #root {
 @keyframes chat-pulse {
   0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
   40% { opacity: 1; transform: scale(1); }
+}
+
+.chat-thinking-label {
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  font-style: italic;
 }
 
 /* Chat Input — Claude style pill */

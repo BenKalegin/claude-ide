@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { createLogger } from './logger';
-import { SessionMode, SessionStatus, SessionActivity, SdkMessageType, IpcChannel } from '../core/constants';
+import { SessionMode, SessionStatus, SessionActivity, SdkMessageType, IpcChannel, ClaudeModel, DEFAULT_MODEL } from '../core/constants';
 
 const log = createLogger('sdk');
 
@@ -33,6 +33,7 @@ export interface SdkSessionInfo {
   activityDetail?: string;
   contextTokens?: number;
   maxContextTokens?: number;
+  model: ClaudeModel;
 }
 
 interface PersistedSdkState {
@@ -44,6 +45,7 @@ interface PersistedSdkState {
     totalCost: number;
     summary?: string;
     title?: string;
+    model?: ClaudeModel;
   }>;
 }
 
@@ -51,18 +53,45 @@ const SUMMARIZE_MODEL = 'haiku';
 const TITLE_MAX_CHARS = 40;
 const SUMMARY_MAX_CHARS = 200;
 const ANSWER_PREVIEW_CHARS = 300;
+const USAGE_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 const STATE_DIR = path.join(os.homedir(), '.claude-ide');
 const SDK_STATE_FILE = path.join(STATE_DIR, 'sdk-sessions.json');
 const MESSAGES_DIR = path.join(STATE_DIR, 'messages');
+const USAGE_FILE = path.join(STATE_DIR, 'usage-history.json');
+
+export interface UsageEntry {
+  timestamp: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  sessionId: string;
+}
+
+interface ActiveQuery {
+  controller: AbortController;
+  query?: { interrupt(): Promise<void> };
+  interrupted: boolean;
+}
 
 export class SdkSessionManager {
   private sessions: Map<string, SdkSessionInfo> = new Map();
-  private activeQueries: Map<string, AbortController> = new Map();
+  private activeQueries: Map<string, ActiveQuery> = new Map();
   private window: BrowserWindow | null = null;
+  private usageHistory: UsageEntry[] = [];
+
+  constructor() {
+    this.loadUsageHistory();
+  }
 
   setWindow(win: BrowserWindow): void {
     this.window = win;
+  }
+
+  /** Send IPC to renderer, silently skipping if the window/frame is destroyed. */
+  private send(channel: string, ...args: unknown[]): void {
+    if (!this.window || this.window.isDestroyed() || this.window.webContents.isDestroyed()) return;
+    this.window.webContents.send(channel, ...args);
   }
 
   async createSession(projectPath: string): Promise<SdkSessionInfo> {
@@ -77,6 +106,7 @@ export class SdkSessionManager {
       mode: SessionMode.Sdk,
       messages: [],
       totalCost: 0,
+      model: DEFAULT_MODEL,
     };
 
     this.sessions.set(id, session);
@@ -101,8 +131,8 @@ export class SdkSessionManager {
     session.messages.push(userMsg);
     this.emitMessage(id, userMsg);
 
-    const controller = new AbortController();
-    this.activeQueries.set(id, controller);
+    const active: ActiveQuery = { controller: new AbortController(), interrupted: false };
+    this.activeQueries.set(id, active);
 
     try {
       const { query } = await import('@anthropic-ai/claude-agent-sdk');
@@ -112,18 +142,22 @@ export class SdkSessionManager {
         allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep', 'Agent'],
         permissionMode: 'acceptEdits',
         includePartialMessages: true,
+        model: session.model,
       };
 
       if (session.claudeSessionId) {
         (options as Record<string, unknown>).resume = session.claudeSessionId;
       }
 
-      for await (const message of query({
+      const q = query({
         prompt,
         options: options as Parameters<typeof query>[0]['options'],
-        signal: controller.signal,
-      })) {
-        if (controller.signal.aborted) break;
+        signal: active.controller.signal,
+      });
+      active.query = q;
+
+      for await (const message of q) {
+        if (active.controller.signal.aborted) break;
 
         // Handle streaming events for activity tracking
         const msg = message as Record<string, unknown>;
@@ -144,6 +178,13 @@ export class SdkSessionManager {
           if (sdkMsg.cost) {
             session.totalCost += sdkMsg.cost.totalUsd;
             this.emitCost(id, session.totalCost);
+            this.recordUsage({
+              timestamp: Date.now(),
+              inputTokens: sdkMsg.cost.inputTokens,
+              outputTokens: sdkMsg.cost.outputTokens,
+              costUsd: sdkMsg.cost.totalUsd,
+              sessionId: id,
+            });
           }
 
           // Track context from result messages
@@ -262,10 +303,39 @@ export class SdkSessionManager {
     }
   }
 
+  setModel(id: string, model: ClaudeModel): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    session.model = model;
+    this.persistState();
+    log.info(`Session ${id} model set to: ${model}`);
+  }
+
+  /** Soft interrupt: asks Claude to stop gracefully. Returns true if interrupted, false if hard-aborted. */
+  async interruptQuery(id: string): Promise<boolean> {
+    const active = this.activeQueries.get(id);
+    if (!active) return false;
+
+    if (!active.interrupted && active.query) {
+      active.interrupted = true;
+      log.info(`SDK query interrupted (soft): session=${id}`);
+      try {
+        await active.query.interrupt();
+        return true;
+      } catch {
+        // If interrupt fails, fall through to hard abort
+      }
+    }
+
+    // Second press or no query ref — hard abort
+    this.cancelQuery(id);
+    return false;
+  }
+
   cancelQuery(id: string): void {
-    const controller = this.activeQueries.get(id);
-    if (controller) {
-      controller.abort();
+    const active = this.activeQueries.get(id);
+    if (active) {
+      active.controller.abort();
       this.activeQueries.delete(id);
     }
   }
@@ -433,19 +503,19 @@ export class SdkSessionManager {
 
   private emitMessage(id: string, message: SdkMessage): void {
     this.appendMessage(id, message);
-    this.window?.webContents.send(IpcChannel.SdkMessage, { id, message });
+    this.send(IpcChannel.SdkMessage, { id, message });
   }
 
   private emitStatus(id: string, status: string): void {
-    this.window?.webContents.send(IpcChannel.SessionStatus, { id, status });
+    this.send(IpcChannel.SessionStatus, { id, status });
   }
 
   private emitCost(id: string, totalCost: number): void {
-    this.window?.webContents.send(IpcChannel.SdkCost, { id, totalCost });
+    this.send(IpcChannel.SdkCost, { id, totalCost });
   }
 
   private emitActivity(id: string, activity: SessionActivity, detail?: string): void {
-    this.window?.webContents.send(IpcChannel.SdkActivity, { id, activity, detail });
+    this.send(IpcChannel.SdkActivity, { id, activity, detail });
   }
 
   private handleStreamEvent(id: string, session: SdkSessionInfo, event: Record<string, unknown>): void {
@@ -487,7 +557,7 @@ export class SdkSessionManager {
   }
 
   private emitTitle(id: string, title: string, summary: string): void {
-    this.window?.webContents.send(IpcChannel.SdkTitle, { id, title, summary });
+    this.send(IpcChannel.SdkTitle, { id, title, summary });
   }
 
   persistState(): void {
@@ -504,6 +574,7 @@ export class SdkSessionManager {
           totalCost: s.totalCost,
           summary: s.summary,
           title: s.title,
+          model: s.model,
         })),
       };
       fs.writeFileSync(SDK_STATE_FILE, JSON.stringify(state, null, 2));
@@ -526,6 +597,7 @@ export class SdkSessionManager {
             messages: [],
             summary: s.summary,
             title: s.title,
+            model: s.model || DEFAULT_MODEL,
           });
         }
       }
@@ -550,10 +622,78 @@ export class SdkSessionManager {
     }
   }
 
+  private recordUsage(entry: UsageEntry): void {
+    this.usageHistory.push(entry);
+    this.pruneUsageHistory();
+    this.persistUsageHistory();
+    this.emitUsageUpdate();
+  }
+
+  private pruneUsageHistory(): void {
+    const cutoff = Date.now() - USAGE_WINDOW_MS;
+    this.usageHistory = this.usageHistory.filter((e) => e.timestamp > cutoff);
+  }
+
+  private emitUsageUpdate(): void {
+    const summary = this.getUsageSummary();
+    this.send(IpcChannel.UsageUpdate, summary);
+  }
+
+  getUsageSummary(): UsageSummary {
+    this.pruneUsageHistory();
+    const now = Date.now();
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let costUsd = 0;
+    let oldest = now;
+
+    for (const e of this.usageHistory) {
+      inputTokens += e.inputTokens;
+      outputTokens += e.outputTokens;
+      costUsd += e.costUsd;
+      if (e.timestamp < oldest) oldest = e.timestamp;
+    }
+
+    const totalTokens = inputTokens + outputTokens;
+    const elapsedHours = this.usageHistory.length > 0
+      ? Math.max((now - oldest) / (60 * 60 * 1000), 0.01)
+      : 1;
+    const tokensPerHour = Math.round(totalTokens / elapsedHours);
+
+    return { inputTokens, outputTokens, totalTokens, costUsd, tokensPerHour, windowMs: USAGE_WINDOW_MS };
+  }
+
+  private persistUsageHistory(): void {
+    try {
+      fs.writeFileSync(USAGE_FILE, JSON.stringify(this.usageHistory));
+    } catch { /* ignore */ }
+  }
+
+  private loadUsageHistory(): void {
+    try {
+      if (!fs.existsSync(USAGE_FILE)) return;
+      const raw = fs.readFileSync(USAGE_FILE, 'utf-8');
+      this.usageHistory = JSON.parse(raw) as UsageEntry[];
+      this.pruneUsageHistory();
+    } catch {
+      this.usageHistory = [];
+    }
+  }
+
   destroy(): void {
     for (const [id] of this.activeQueries) {
       this.cancelQuery(id);
     }
     this.persistState();
+    this.persistUsageHistory();
   }
+}
+
+export interface UsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  tokensPerHour: number;
+  windowMs: number;
 }

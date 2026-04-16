@@ -64,7 +64,7 @@ function getOrCreateTerminal(sessionId: string): CachedTerminal {
     cursorBlink: false,
     cursorStyle: 'bar',
     cursorInactiveStyle: 'none',
-    scrollOnOutput: true,
+    scrollOnOutput: false,
   });
 
   const fitAddon = new FitAddon();

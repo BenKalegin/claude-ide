@@ -12,6 +12,7 @@ export function ProjectTree(): React.ReactElement {
   const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const selectSession = useSessionStore((s) => s.selectSession);
+  const removeSession = useSessionStore((s) => s.removeSession);
   const projectNames = useSessionStore((s) => s.projectNames);
   const setProjectName = useSessionStore((s) => s.setProjectName);
   const addSession = useSessionStore((s) => s.addSession);
@@ -70,6 +71,27 @@ export function ProjectTree(): React.ReactElement {
     const session = await window.api.sessions.create(projectPath, mode);
     addSession(session);
     selectSession(session.id);
+  };
+
+  const [confirmCloseId, setConfirmCloseId] = useState<string | null>(null);
+
+  const handleCloseSession = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setConfirmCloseId(id);
+  };
+
+  const handleConfirmClose = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirmCloseId) return;
+    await window.api.sessions.kill(confirmCloseId);
+    await window.api.sessions.remove(confirmCloseId);
+    removeSession(confirmCloseId);
+    setConfirmCloseId(null);
+  };
+
+  const handleCancelClose = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConfirmCloseId(null);
   };
 
   useEffect(() => {
@@ -171,6 +193,18 @@ export function ProjectTree(): React.ReactElement {
               )}
               {s.mode === SessionMode.Terminal && (
                 <span className="tree-mode tree-mode-terminal">TTY</span>
+              )}
+              {confirmCloseId === s.id ? (
+                <span className="tree-confirm-close">
+                  <button className="tree-confirm-yes" title="Confirm close" onClick={handleConfirmClose}>&#10003;</button>
+                  <button className="tree-confirm-no" title="Cancel" onClick={handleCancelClose}>&#10005;</button>
+                </span>
+              ) : (
+                <button
+                  className="tree-close-btn"
+                  title="Close session"
+                  onClick={(e) => handleCloseSession(e, s.id)}
+                >&times;</button>
               )}
             </div>
           ))}

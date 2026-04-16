@@ -6,6 +6,9 @@
 - `npm run package` — build + package as macOS app
 - Logs at `~/.claude-ide/logs/main.log`
 
+## Git
+- **Never commit or push automatically.** Only commit when the user explicitly asks (e.g. "commit", "commit and push"). Do not commit after completing a task unless told to.
+
 ## Code Style
 - **No magic strings.** All string literals used as identifiers, statuses, modes, event names, or IPC channels must be named constants or enum-like `const` objects. The only exceptions are display text (labels, placeholders, log messages) and CSS class names.
 - **No magic numbers.** Every numeric literal (timeouts, sizes, thresholds) must be a named constant. Exceptions: `0`, `1`, `-1`.

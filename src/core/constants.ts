@@ -24,6 +24,7 @@ export const IpcChannel = {
   ResizeSession: 'resize-session',
   SdkSendMessage: 'sdk-send-message',
   SdkCancelQuery: 'sdk-cancel-query',
+  SdkInterruptQuery: 'sdk-interrupt-query',
   SdkGetMessages: 'sdk-get-messages',
   RenameProject: 'rename-project',
   GetProjectNames: 'get-project-names',
@@ -36,6 +37,9 @@ export const IpcChannel = {
   SdkCost: 'sdk-cost',
   SdkTitle: 'sdk-title',
   SdkActivity: 'sdk-activity',
+  UsageUpdate: 'usage-update',
+  GetUsageHistory: 'get-usage-history',
+  SetSessionModel: 'set-session-model',
 } as const;
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
 
@@ -56,6 +60,15 @@ export const SessionActivity = {
   Streaming: 'streaming',
 } as const;
 export type SessionActivity = (typeof SessionActivity)[keyof typeof SessionActivity];
+
+export const ClaudeModel = {
+  Sonnet: 'sonnet',
+  Opus: 'opus',
+  Haiku: 'haiku',
+} as const;
+export type ClaudeModel = (typeof ClaudeModel)[keyof typeof ClaudeModel];
+
+export const DEFAULT_MODEL: ClaudeModel = ClaudeModel.Sonnet;
 
 export const PTY_TERM = 'xterm-256color';
 export const PTY_DEFAULT_COLS = 120;

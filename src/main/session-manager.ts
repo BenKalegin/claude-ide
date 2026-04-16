@@ -6,7 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { createLogger } from './logger';
-import { SessionMode, SessionStatus, IpcChannel, PTY_TERM, PTY_DEFAULT_COLS, PTY_DEFAULT_ROWS } from '../core/constants';
+import { SessionMode, SessionStatus, IpcChannel, PTY_TERM, PTY_DEFAULT_COLS, PTY_DEFAULT_ROWS, ClaudeModel, DEFAULT_MODEL } from '../core/constants';
 
 const log = createLogger('session');
 
@@ -28,6 +28,7 @@ export interface SessionInfo {
   mode: SessionMode;
   title?: string;
   summary?: string;
+  model: ClaudeModel;
 }
 
 interface PersistedState {
@@ -39,6 +40,7 @@ interface PersistedState {
     mode: SessionMode;
     title?: string;
     summary?: string;
+    model?: ClaudeModel;
   }>;
 }
 
@@ -46,7 +48,7 @@ const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const TITLE_MAX_CHARS = 40;
 const SUMMARY_MAX_CHARS = 200;
 const SUMMARIZE_MODEL = 'haiku';
-const TITLE_UPDATE_INTERVAL = 30000;
+const TITLE_GENERATION_DELAY = 10000;
 
 const STATE_DIR = path.join(os.homedir(), '.claude-ide');
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
@@ -56,10 +58,15 @@ export class SessionManager {
   private ptys: Map<string, IPty> = new Map();
   private window: BrowserWindow | null = null;
   private processTimer: ReturnType<typeof setInterval> | null = null;
-  private titleTimer: ReturnType<typeof setInterval> | null = null;
 
   setWindow(win: BrowserWindow): void {
     this.window = win;
+  }
+
+  /** Send IPC to renderer, silently skipping if the window/frame is destroyed. */
+  private send(channel: string, ...args: unknown[]): void {
+    if (!this.window || this.window.isDestroyed() || this.window.webContents.isDestroyed()) return;
+    this.window.webContents.send(channel, ...args);
   }
 
   createSession(projectPath: string, mode: SessionMode = SessionMode.Terminal): SessionInfo {
@@ -73,6 +80,7 @@ export class SessionManager {
         projectName,
         status: SessionStatus.Stopped,
         mode: SessionMode.Sdk,
+        model: DEFAULT_MODEL,
       };
       this.sessions.set(id, session);
       this.persistState();
@@ -86,7 +94,7 @@ export class SessionManager {
 
     let pty: IPty;
     try {
-      pty = ptySpawn(claudePath, [], {
+      pty = ptySpawn(claudePath, ['--model', DEFAULT_MODEL], {
         name: PTY_TERM,
         cols: PTY_DEFAULT_COLS,
         rows: PTY_DEFAULT_ROWS,
@@ -101,6 +109,7 @@ export class SessionManager {
         projectName,
         status: SessionStatus.Error,
         mode: SessionMode.Terminal,
+        model: DEFAULT_MODEL,
       };
       this.sessions.set(id, session);
       this.persistState();
@@ -114,6 +123,7 @@ export class SessionManager {
       status: SessionStatus.Active,
       pid: pty.pid,
       mode: SessionMode.Terminal,
+      model: DEFAULT_MODEL,
     };
 
     log.info(`Session ${id} spawned, pid: ${pty.pid}`);
@@ -122,7 +132,7 @@ export class SessionManager {
     this.ptys.set(id, pty);
 
     pty.onData((data) => {
-      this.window?.webContents.send(IpcChannel.SessionData, { id, data });
+      this.send(IpcChannel.SessionData, { id, data });
     });
 
     pty.onExit(({ exitCode }) => {
@@ -131,13 +141,14 @@ export class SessionManager {
       if (s) {
         s.status = exitCode === 0 ? SessionStatus.Stopped : SessionStatus.Error;
         s.pid = undefined;
-        this.window?.webContents.send(IpcChannel.SessionStatus, { id, status: s.status });
+        this.send(IpcChannel.SessionStatus, { id, status: s.status });
       }
       this.ptys.delete(id);
       this.persistState();
     });
 
     this.persistState();
+    this.scheduleTitleGeneration(id);
     return session;
   }
 
@@ -155,6 +166,9 @@ export class SessionManager {
     const args = session.claudeSessionId
       ? ['--resume', session.claudeSessionId]
       : ['--continue'];
+    if (session.model) {
+      args.push('--model', session.model);
+    }
     log.info(`Resuming session ${id} with args: ${args.join(' ')}`);
     const pty = ptySpawn(claudePath, args, {
       name: PTY_TERM,
@@ -169,7 +183,7 @@ export class SessionManager {
     this.ptys.set(id, pty);
 
     pty.onData((data) => {
-      this.window?.webContents.send(IpcChannel.SessionData, { id, data });
+      this.send(IpcChannel.SessionData, { id, data });
     });
 
     pty.onExit(({ exitCode }) => {
@@ -177,13 +191,14 @@ export class SessionManager {
       if (s) {
         s.status = exitCode === 0 ? SessionStatus.Stopped : SessionStatus.Error;
         s.pid = undefined;
-        this.window?.webContents.send(IpcChannel.SessionStatus, { id, status: s.status });
+        this.send(IpcChannel.SessionStatus, { id, status: s.status });
       }
       this.ptys.delete(id);
       this.persistState();
     });
 
     this.persistState();
+    this.scheduleTitleGeneration(id);
     return session;
   }
 
@@ -207,6 +222,14 @@ export class SessionManager {
     this.killSession(id);
     this.sessions.delete(id);
     this.persistState();
+  }
+
+  setModel(id: string, model: ClaudeModel): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    session.model = model;
+    this.persistState();
+    log.info(`Session ${id} model set to: ${model}`);
   }
 
   writeToSession(id: string, data: string): void {
@@ -263,6 +286,7 @@ export class SessionManager {
           mode: s.mode,
           title: s.title,
           summary: s.summary,
+          model: s.model,
         }))
       };
       fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -282,6 +306,7 @@ export class SessionManager {
             ...s,
             status: SessionStatus.Stopped,
             mode: s.mode || SessionMode.Terminal,
+            model: s.model || DEFAULT_MODEL,
           });
         }
       }
@@ -301,27 +326,28 @@ export class SessionManager {
   }
 
   startTitleUpdater(): void {
-    log.info('Starting TTY title updater');
+    log.info('Starting TTY title updater (event-driven, no background polling)');
 
-    // Run immediately for all TTY sessions without titles
+    // Backfill titles once for sessions that were persisted without one
     for (const session of this.sessions.values()) {
       if (session.mode === SessionMode.Terminal && !session.title) {
         log.info(`Backfilling TTY title for ${session.id} (${session.projectName})`);
         this.updateTtyTitle(session).catch(() => {});
       }
     }
+  }
 
-    // Periodically update titles for active TTY sessions
-    this.titleTimer = setInterval(() => {
-      for (const session of this.sessions.values()) {
-        if (session.mode === SessionMode.Terminal && session.status === SessionStatus.Active) {
-          this.updateTtyTitle(session).catch(() => {});
-        }
-      }
-    }, TITLE_UPDATE_INTERVAL);
+  /** Schedule a one-shot title generation for a session after a short delay. */
+  scheduleTitleGeneration(id: string): void {
+    const session = this.sessions.get(id);
+    if (!session || session.mode !== SessionMode.Terminal || session.title) return;
+    setTimeout(() => {
+      this.updateTtyTitle(session).catch(() => {});
+    }, TITLE_GENERATION_DELAY);
   }
 
   private async updateTtyTitle(session: SessionInfo): Promise<void> {
+    if (session.title) return;
     try {
       const encodedCwd = session.projectPath.replace(/[^a-zA-Z0-9]/g, '-');
       const sessionDir = path.join(CLAUDE_PROJECTS_DIR, encodedCwd);
@@ -396,7 +422,7 @@ export class SessionManager {
       if (parsed.title) {
         session.title = parsed.title.slice(0, TITLE_MAX_CHARS);
         log.info(`TTY session ${session.id} title: "${session.title}"`);
-        this.window?.webContents.send(IpcChannel.SdkTitle, {
+        this.send(IpcChannel.SdkTitle, {
           id: session.id,
           title: session.title,
           summary: '',
@@ -413,7 +439,7 @@ export class SessionManager {
       for (const session of this.sessions.values()) {
         if (session.status === SessionStatus.Active && session.pid) {
           const procs = this.getChildProcesses(session.id);
-          this.window?.webContents.send(IpcChannel.SessionProcesses, { id: session.id, processes: procs });
+          this.send(IpcChannel.SessionProcesses, { id: session.id, processes: procs });
         }
       }
     }, 3000);
@@ -423,10 +449,6 @@ export class SessionManager {
     if (this.processTimer) {
       clearInterval(this.processTimer);
       this.processTimer = null;
-    }
-    if (this.titleTimer) {
-      clearInterval(this.titleTimer);
-      this.titleTimer = null;
     }
   }
 
