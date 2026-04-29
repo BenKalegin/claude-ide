@@ -58,6 +58,7 @@ export const SessionActivity = {
   Thinking: 'thinking',
   UsingTool: 'using_tool',
   Streaming: 'streaming',
+  WaitingForUser: 'waiting_for_user',
 } as const;
 export type SessionActivity = (typeof SessionActivity)[keyof typeof SessionActivity];
 

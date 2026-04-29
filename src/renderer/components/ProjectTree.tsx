@@ -115,20 +115,12 @@ export function ProjectTree(): React.ReactElement {
     return s.mode === SessionMode.Terminal ? `${s.projectName} (tty)` : 'New session';
   };
 
-  const statusColor = (status: string) => {
-    switch (status) {
-      case SessionStatus.Active: return 'var(--color-green)';
-      case SessionStatus.Thinking: return 'var(--color-yellow)';
-      case SessionStatus.Error: return 'var(--color-red)';
-      default: return 'var(--color-gray)';
-    }
-  };
-
   const formatActivity = (activity: string, detail?: string): string => {
     switch (activity) {
-      case SessionActivity.Thinking: return 'thinking...';
-      case SessionActivity.UsingTool: return detail ? `${detail}` : 'tool...';
-      case SessionActivity.Streaming: return 'writing...';
+      case SessionActivity.WaitingForUser: return 'awaiting input';
+      case SessionActivity.Thinking: return detail ? `${detail}…` : 'thinking…';
+      case SessionActivity.UsingTool: return detail ? `${detail}` : 'tool…';
+      case SessionActivity.Streaming: return 'writing…';
       default: return '';
     }
   };
@@ -185,9 +177,26 @@ export function ProjectTree(): React.ReactElement {
               className={`tree-item ${activeSessionId === s.id ? 'tree-active' : ''}`}
               onClick={() => selectSession(s.id)}
               title={s.summary || ''}
+              data-status={s.status}
+              data-activity={s.activity || SessionActivity.Idle}
+              data-waiting={s.activity === SessionActivity.WaitingForUser ? 'true' : undefined}
+              data-running={
+                s.activity && s.activity !== SessionActivity.Idle && s.activity !== SessionActivity.WaitingForUser
+                  ? 'true'
+                  : undefined
+              }
             >
-              <span className="tree-dot" style={{ backgroundColor: statusColor(s.status) }} />
+              {s.activity === SessionActivity.WaitingForUser ? (
+                <span className="tree-glyph-wait" aria-label="waiting for input">!</span>
+              ) : (
+                <span className="tree-dot" />
+              )}
               <span className="tree-name">{getSessionLabel(s)}</span>
+              {s.subagentCount !== undefined && s.subagentCount > 0 && (
+                <span className="tree-subagent" title={`${s.subagentCount} subagent${s.subagentCount === 1 ? '' : 's'}`}>
+                  &times;{s.subagentCount}
+                </span>
+              )}
               {s.activity && s.activity !== SessionActivity.Idle && (
                 <span className="tree-activity">{formatActivity(s.activity, s.activityDetail)}</span>
               )}

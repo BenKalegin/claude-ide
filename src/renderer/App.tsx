@@ -74,8 +74,8 @@ export function App(): React.ReactElement {
       updateSession(id, { title, summary });
     });
 
-    const unsubSdkActivity = window.api.sdk.onActivity(({ id, activity, detail }) => {
-      updateSession(id, { activity, activityDetail: detail });
+    const unsubSdkActivity = window.api.sdk.onActivity(({ id, activity, detail, subagentCount }) => {
+      updateSession(id, { activity, activityDetail: detail, subagentCount });
     });
 
     return () => {

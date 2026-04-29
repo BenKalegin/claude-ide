@@ -71,6 +71,7 @@ app.whenReady().then(() => {
   mainLog.info(`Restored ${restored.length} terminal + ${sdkRestored.length} SDK sessions`);
 
   sessionManager.startProcessMonitor();
+  sessionManager.startActivityMonitor();
 
   ipcMain.handle(IpcChannel.CreateSession, async (_e, projectPath: string, mode: SessionMode = SessionMode.Terminal) => {
     ipcLog.info('create-session', { projectPath, mode });

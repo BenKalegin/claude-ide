@@ -26,6 +26,7 @@ interface SessionInfo {
   summary?: string;
   activity?: string;
   activityDetail?: string;
+  subagentCount?: number;
 }
 
 interface ChildProcess {
@@ -70,7 +71,7 @@ interface Window {
       onMessage: (callback: (event: { id: string; message: SdkMessage }) => void) => () => void;
       onCost: (callback: (event: { id: string; totalCost: number }) => void) => () => void;
       onTitle: (callback: (event: { id: string; title: string; summary: string }) => void) => () => void;
-      onActivity: (callback: (event: { id: string; activity: string; detail?: string }) => void) => () => void;
+      onActivity: (callback: (event: { id: string; activity: string; detail?: string; subagentCount?: number }) => void) => () => void;
     };
     selectDirectory: () => Promise<string | null>;
     getLogPath: () => Promise<string>;

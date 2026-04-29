@@ -131,8 +131,8 @@ const api = {
       return () => ipcRenderer.removeListener(IpcChannel.SdkTitle, handler);
     },
 
-    onActivity: (callback: (event: { id: string; activity: string; detail?: string }) => void) => {
-      const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; activity: string; detail?: string }) =>
+    onActivity: (callback: (event: { id: string; activity: string; detail?: string; subagentCount?: number }) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; activity: string; detail?: string; subagentCount?: number }) =>
         callback(payload);
       ipcRenderer.on(IpcChannel.SdkActivity, handler);
       return () => ipcRenderer.removeListener(IpcChannel.SdkActivity, handler);

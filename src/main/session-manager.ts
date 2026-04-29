@@ -6,7 +6,11 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { createLogger } from './logger';
-import { SessionMode, SessionStatus, IpcChannel, PTY_TERM, PTY_DEFAULT_COLS, PTY_DEFAULT_ROWS, ClaudeModel, DEFAULT_MODEL } from '../core/constants';
+import { SessionMode, SessionStatus, SessionActivity, IpcChannel, PTY_TERM, PTY_DEFAULT_COLS, PTY_DEFAULT_ROWS, ClaudeModel, DEFAULT_MODEL } from '../core/constants';
+import { createTtyState, ingest, snapshot, clearWaiting } from './tty-activity';
+import type { TtyActivitySnapshot } from './tty-activity';
+
+const ACTIVITY_POLL_MS = 750;
 
 const log = createLogger('session');
 
@@ -29,6 +33,9 @@ export interface SessionInfo {
   title?: string;
   summary?: string;
   model: ClaudeModel;
+  activity?: SessionActivity;
+  activityDetail?: string;
+  subagentCount?: number;
 }
 
 interface PersistedState {
@@ -58,6 +65,8 @@ export class SessionManager {
   private ptys: Map<string, IPty> = new Map();
   private window: BrowserWindow | null = null;
   private processTimer: ReturnType<typeof setInterval> | null = null;
+  private activityStates: Map<string, ReturnType<typeof createTtyState>> = new Map();
+  private activityTimer: ReturnType<typeof setInterval> | null = null;
 
   setWindow(win: BrowserWindow): void {
     this.window = win;
@@ -131,8 +140,11 @@ export class SessionManager {
     this.sessions.set(id, session);
     this.ptys.set(id, pty);
 
+    this.activityStates.set(id, createTtyState());
+
     pty.onData((data) => {
       this.send(IpcChannel.SessionData, { id, data });
+      this.ingestPtyData(id, data);
     });
 
     pty.onExit(({ exitCode }) => {
@@ -144,6 +156,7 @@ export class SessionManager {
         this.send(IpcChannel.SessionStatus, { id, status: s.status });
       }
       this.ptys.delete(id);
+      this.activityStates.delete(id);
       this.persistState();
     });
 
@@ -181,9 +194,11 @@ export class SessionManager {
     session.status = SessionStatus.Active;
     session.pid = pty.pid;
     this.ptys.set(id, pty);
+    this.activityStates.set(id, createTtyState());
 
     pty.onData((data) => {
       this.send(IpcChannel.SessionData, { id, data });
+      this.ingestPtyData(id, data);
     });
 
     pty.onExit(({ exitCode }) => {
@@ -194,6 +209,7 @@ export class SessionManager {
         this.send(IpcChannel.SessionStatus, { id, status: s.status });
       }
       this.ptys.delete(id);
+      this.activityStates.delete(id);
       this.persistState();
     });
 
@@ -208,9 +224,14 @@ export class SessionManager {
       pty.kill();
       this.ptys.delete(id);
     }
+    this.activityStates.delete(id);
     const session = this.sessions.get(id);
     if (session) {
       session.status = SessionStatus.Stopped;
+      session.activity = SessionActivity.Idle;
+      session.activityDetail = undefined;
+      session.subagentCount = 0;
+      this.send(IpcChannel.SdkActivity, { id, activity: SessionActivity.Idle, subagentCount: 0 });
       session.pid = undefined;
       this.persistState();
       return true;
@@ -234,6 +255,8 @@ export class SessionManager {
 
   writeToSession(id: string, data: string): void {
     this.ptys.get(id)?.write(data);
+    const state = this.activityStates.get(id);
+    if (state) clearWaiting(state);
   }
 
   resizeSession(id: string, cols: number, rows: number): void {
@@ -452,8 +475,54 @@ export class SessionManager {
     }
   }
 
+  startActivityMonitor(): void {
+    this.activityTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [id, state] of this.activityStates) {
+        const session = this.sessions.get(id);
+        if (!session || session.status !== SessionStatus.Active) continue;
+        this.applyActivity(session, snapshot(state, now));
+      }
+    }, ACTIVITY_POLL_MS);
+  }
+
+  stopActivityMonitor(): void {
+    if (this.activityTimer) {
+      clearInterval(this.activityTimer);
+      this.activityTimer = null;
+    }
+  }
+
+  private ingestPtyData(id: string, data: string): void {
+    const state = this.activityStates.get(id);
+    if (!state) return;
+    const now = Date.now();
+    ingest(state, data, now);
+    const session = this.sessions.get(id);
+    if (!session) return;
+    this.applyActivity(session, snapshot(state, now));
+  }
+
+  private applyActivity(session: SessionInfo, snap: TtyActivitySnapshot): void {
+    const changed =
+      session.activity !== snap.activity ||
+      session.activityDetail !== snap.detail ||
+      session.subagentCount !== snap.subagentCount;
+    if (!changed) return;
+    session.activity = snap.activity;
+    session.activityDetail = snap.detail;
+    session.subagentCount = snap.subagentCount;
+    this.send(IpcChannel.SdkActivity, {
+      id: session.id,
+      activity: snap.activity,
+      detail: snap.detail,
+      subagentCount: snap.subagentCount,
+    });
+  }
+
   destroy(): void {
     this.stopProcessMonitor();
+    this.stopActivityMonitor();
     for (const [id] of this.ptys) {
       this.killSession(id);
     }
