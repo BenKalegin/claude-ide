@@ -4,7 +4,16 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { createLogger } from './logger';
-import { SessionMode, SessionStatus, SessionActivity, SdkMessageType, IpcChannel, ClaudeModel, DEFAULT_MODEL } from '../core/constants';
+import {
+  AgentProvider,
+  DEFAULT_AGENT_PROVIDER,
+  IpcChannel,
+  SessionActivity,
+  SessionMode,
+  SessionStatus,
+  SdkMessageType,
+} from '../core/constants';
+import { getDefaultModelForProvider } from './agent-terminal-provider';
 
 const log = createLogger('sdk');
 
@@ -22,7 +31,8 @@ export interface SdkSessionInfo {
   id: string;
   projectPath: string;
   projectName: string;
-  claudeSessionId?: string;
+  provider: AgentProvider;
+  providerSessionId?: string;
   status: SessionStatus;
   mode: typeof SessionMode.Sdk;
   messages: SdkMessage[];
@@ -33,7 +43,7 @@ export interface SdkSessionInfo {
   activityDetail?: string;
   contextTokens?: number;
   maxContextTokens?: number;
-  model: ClaudeModel;
+  model: string;
 }
 
 interface PersistedSdkState {
@@ -41,11 +51,13 @@ interface PersistedSdkState {
     id: string;
     projectPath: string;
     projectName: string;
+    provider?: AgentProvider;
+    providerSessionId?: string;
     claudeSessionId?: string;
     totalCost: number;
     summary?: string;
     title?: string;
-    model?: ClaudeModel;
+    model?: string;
   }>;
 }
 
@@ -66,6 +78,10 @@ export interface UsageEntry {
   outputTokens: number;
   costUsd: number;
   sessionId: string;
+}
+
+function normalizeAgentProvider(provider?: AgentProvider): AgentProvider {
+  return provider === AgentProvider.Codex ? AgentProvider.Codex : AgentProvider.Claude;
 }
 
 interface ActiveQuery {
@@ -94,7 +110,10 @@ export class SdkSessionManager {
     this.window.webContents.send(channel, ...args);
   }
 
-  async createSession(projectPath: string): Promise<SdkSessionInfo> {
+  async createSession(
+    projectPath: string,
+    provider: AgentProvider = DEFAULT_AGENT_PROVIDER
+  ): Promise<SdkSessionInfo> {
     const id = crypto.randomUUID();
     const projectName = path.basename(projectPath);
 
@@ -102,11 +121,12 @@ export class SdkSessionManager {
       id,
       projectPath,
       projectName,
+      provider,
       status: SessionStatus.Stopped,
       mode: SessionMode.Sdk,
       messages: [],
       totalCost: 0,
-      model: DEFAULT_MODEL,
+      model: getDefaultModelForProvider(provider),
     };
 
     this.sessions.set(id, session);
@@ -119,6 +139,17 @@ export class SdkSessionManager {
     if (!session) return;
 
     log.info(`SDK query: session=${id}, prompt="${prompt.substring(0, 80)}"`);
+
+    if (session.provider !== AgentProvider.Claude) {
+      const errorMsg: SdkMessage = {
+        type: SdkMessageType.System,
+        content: 'Codex SDK sessions are not wired yet. Use Codex Terminal mode for now.',
+        timestamp: Date.now(),
+      };
+      session.messages.push(errorMsg);
+      this.emitMessage(id, errorMsg);
+      return;
+    }
 
     session.status = SessionStatus.Thinking;
     this.emitStatus(id, SessionStatus.Thinking);
@@ -143,16 +174,16 @@ export class SdkSessionManager {
         permissionMode: 'acceptEdits',
         includePartialMessages: true,
         model: session.model,
+        abortController: active.controller,
       };
 
-      if (session.claudeSessionId) {
-        (options as Record<string, unknown>).resume = session.claudeSessionId;
+      if (session.providerSessionId) {
+        (options as Record<string, unknown>).resume = session.providerSessionId;
       }
 
       const q = query({
         prompt,
         options: options as Parameters<typeof query>[0]['options'],
-        signal: active.controller.signal,
       });
       active.query = q;
 
@@ -172,7 +203,7 @@ export class SdkSessionManager {
           this.emitMessage(id, sdkMsg);
 
           if (sdkMsg.type === SdkMessageType.System && sdkMsg.sessionId) {
-            session.claudeSessionId = sdkMsg.sessionId;
+            session.providerSessionId = sdkMsg.sessionId;
           }
 
           if (sdkMsg.cost) {
@@ -243,6 +274,8 @@ export class SdkSessionManager {
   }
 
   private async updateSessionSummary(session: SdkSessionInfo): Promise<void> {
+    if (session.provider !== AgentProvider.Claude) return;
+
     try {
       const lastUser = [...session.messages]
         .reverse()
@@ -303,7 +336,7 @@ export class SdkSessionManager {
     }
   }
 
-  setModel(id: string, model: ClaudeModel): void {
+  setModel(id: string, model: string): void {
     const session = this.sessions.get(id);
     if (!session) return;
     session.model = model;
@@ -570,7 +603,8 @@ export class SdkSessionManager {
           id: s.id,
           projectPath: s.projectPath,
           projectName: s.projectName,
-          claudeSessionId: s.claudeSessionId,
+          provider: s.provider,
+          providerSessionId: s.providerSessionId,
           totalCost: s.totalCost,
           summary: s.summary,
           title: s.title,
@@ -590,14 +624,17 @@ export class SdkSessionManager {
       const state: PersistedSdkState = JSON.parse(raw);
       for (const s of state.sessions) {
         if (!this.sessions.has(s.id)) {
+          const provider = normalizeAgentProvider(s.provider);
           this.sessions.set(s.id, {
             ...s,
+            provider,
+            providerSessionId: s.providerSessionId || s.claudeSessionId,
             status: SessionStatus.Stopped,
             mode: SessionMode.Sdk,
             messages: [],
             summary: s.summary,
             title: s.title,
-            model: s.model || DEFAULT_MODEL,
+            model: s.model || getDefaultModelForProvider(provider),
           });
         }
       }

@@ -2,7 +2,14 @@ import React, { useEffect, useRef, useState, memo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useSessionStore } from '../stores/session-store';
-import { SdkMessageType, SessionStatus, SessionActivity, ClaudeModel } from '../../core/constants';
+import {
+  AgentProvider,
+  ClaudeModel,
+  DEFAULT_CODEX_MODEL,
+  SdkMessageType,
+  SessionActivity,
+  SessionStatus,
+} from '../../core/constants';
 
 const CMD_PREFIX = '/';
 
@@ -99,6 +106,10 @@ function handleSlashCommand(sessionId: string, text: string): boolean {
     }
     case '/model': {
       const session = useSessionStore.getState().sessions.get(sessionId);
+      if (session?.provider === AgentProvider.Codex) {
+        emitLocal(sessionId, `Current model: ${session.model || DEFAULT_CODEX_MODEL}`);
+        return true;
+      }
       if (!arg) {
         emitLocal(sessionId, `Current model: ${session?.model || 'unknown'}\nAvailable: sonnet, opus, haiku`);
         return true;
@@ -253,6 +264,7 @@ export function SdkView({ sessionId }: Props): React.ReactElement {
   }, [messages]);
 
   const isThinking = session?.status === SessionStatus.Thinking;
+  const providerLabel = session?.provider === AgentProvider.Codex ? 'Codex' : 'Claude';
   const visible = messages.filter((msg) =>
     msg.type !== SdkMessageType.System || !msg.content.startsWith('Session initialized:')
   );
@@ -261,7 +273,7 @@ export function SdkView({ sessionId }: Props): React.ReactElement {
     <div className="chat-view">
       <div className="chat-messages" ref={scrollRef}>
         {visible.length === 0 && (
-          <div className="chat-empty">Send a message to start a Claude session</div>
+          <div className="chat-empty">Send a message to start a {providerLabel} session</div>
         )}
         {visible.map((msg, i) => (
           <ChatMessage key={i} msg={msg} />

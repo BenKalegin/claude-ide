@@ -1,6 +1,8 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { useSessionStore } from '../stores/session-store';
-import { SessionMode, SessionStatus, SessionActivity, SdkMessageType } from '../../core/constants';
+import { AgentProvider, SessionMode, SessionStatus, SessionActivity, SdkMessageType } from '../../core/constants';
+
+const SESSION_LABEL_PREVIEW_CHARS = 40;
 
 interface ProjectGroup {
   projectPath: string;
@@ -66,9 +68,9 @@ export function ProjectTree(): React.ReactElement {
     else if (e.key === 'Escape') setEditingPath(null);
   };
 
-  const handleNewSession = async (projectPath: string, mode: SessionMode) => {
+  const handleNewSession = async (projectPath: string, mode: SessionMode, provider: AgentProvider) => {
     setAddMenuPath(null);
-    const session = await window.api.sessions.create(projectPath, mode);
+    const session = await window.api.sessions.create(projectPath, mode, provider);
     addSession(session);
     selectSession(session.id);
   };
@@ -108,12 +110,15 @@ export function ProjectTree(): React.ReactElement {
     if (msgs && msgs.length > 0) {
       const firstUser = msgs.find((m) => m.type === SdkMessageType.User);
       if (firstUser) {
-        const text = firstUser.content.slice(0, 40);
+        const text = firstUser.content.slice(0, SESSION_LABEL_PREVIEW_CHARS);
         return text.length < firstUser.content.length ? text + '...' : text;
       }
     }
     return s.mode === SessionMode.Terminal ? `${s.projectName} (tty)` : 'New session';
   };
+
+  const getProviderLabel = (provider: AgentProvider | undefined): string =>
+    provider === AgentProvider.Codex ? 'Codex' : 'Claude';
 
   const formatActivity = (activity: string, detail?: string): string => {
     switch (activity) {
@@ -163,11 +168,14 @@ export function ProjectTree(): React.ReactElement {
           </div>
           {addMenuPath === group.projectPath && (
             <div className="tree-add-menu" onClick={(e) => e.stopPropagation()}>
-              <button onClick={() => handleNewSession(group.projectPath, SessionMode.Sdk)}>
-                <span className="mode-icon">&#9671;</span> SDK
+              <button onClick={() => handleNewSession(group.projectPath, SessionMode.Sdk, AgentProvider.Claude)}>
+                <span className="mode-icon">&#9671;</span> Claude SDK
               </button>
-              <button onClick={() => handleNewSession(group.projectPath, SessionMode.Terminal)}>
-                <span className="mode-icon">&#9654;</span> Terminal
+              <button onClick={() => handleNewSession(group.projectPath, SessionMode.Terminal, AgentProvider.Claude)}>
+                <span className="mode-icon">&#9654;</span> Claude Terminal
+              </button>
+              <button onClick={() => handleNewSession(group.projectPath, SessionMode.Terminal, AgentProvider.Codex)}>
+                <span className="mode-icon">&#9654;</span> Codex Terminal
               </button>
             </div>
           )}
@@ -201,7 +209,10 @@ export function ProjectTree(): React.ReactElement {
                 <span className="tree-activity">{formatActivity(s.activity, s.activityDetail)}</span>
               )}
               {s.mode === SessionMode.Terminal && (
-                <span className="tree-mode tree-mode-terminal">TTY</span>
+                <span className="tree-mode tree-mode-terminal">{getProviderLabel(s.provider)} TTY</span>
+              )}
+              {s.mode === SessionMode.Sdk && (
+                <span className="tree-mode tree-mode-sdk">{getProviderLabel(s.provider)} SDK</span>
               )}
               {confirmCloseId === s.id ? (
                 <span className="tree-confirm-close">

@@ -518,6 +518,13 @@ html, body, #root {
   white-space: nowrap;
 }
 
+.session-header-provider {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
 .session-header-model {
   margin-left: auto;
   background: var(--color-surface);

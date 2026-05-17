@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IpcChannel, SessionMode } from '../core/constants';
+import { AgentProvider, DEFAULT_AGENT_PROVIDER, IpcChannel, SessionMode } from '../core/constants';
 
 export interface UsageSummary {
   inputTokens: number;
@@ -14,7 +14,8 @@ export interface SessionInfo {
   id: string;
   projectPath: string;
   projectName: string;
-  claudeSessionId?: string;
+  provider: AgentProvider;
+  providerSessionId?: string;
   status: 'active' | 'stopped' | 'error' | 'thinking';
   pid?: number;
   mode: 'terminal' | 'sdk';
@@ -39,8 +40,12 @@ export interface SdkMessage {
 
 const api = {
   sessions: {
-    create: (projectPath: string, mode: SessionMode = SessionMode.Terminal): Promise<SessionInfo> =>
-      ipcRenderer.invoke(IpcChannel.CreateSession, projectPath, mode),
+    create: (
+      projectPath: string,
+      mode: SessionMode = SessionMode.Terminal,
+      provider: AgentProvider = DEFAULT_AGENT_PROVIDER
+    ): Promise<SessionInfo> =>
+      ipcRenderer.invoke(IpcChannel.CreateSession, projectPath, mode, provider),
 
     resume: (id: string): Promise<SessionInfo | null> =>
       ipcRenderer.invoke(IpcChannel.ResumeSession, id),

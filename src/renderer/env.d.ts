@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 type SessionMode = 'terminal' | 'sdk';
+type AgentProvider = 'claude' | 'codex';
 
 interface UsageSummary {
   inputTokens: number;
@@ -16,7 +17,8 @@ interface SessionInfo {
   projectPath: string;
   projectName: string;
   label?: string;
-  claudeSessionId?: string;
+  provider: AgentProvider;
+  providerSessionId?: string;
   status: 'active' | 'stopped' | 'error' | 'thinking';
   pid?: number;
   mode: SessionMode;
@@ -47,7 +49,7 @@ interface SdkMessage {
 interface Window {
   api: {
     sessions: {
-      create: (projectPath: string, mode?: SessionMode) => Promise<SessionInfo>;
+      create: (projectPath: string, mode?: SessionMode, provider?: AgentProvider) => Promise<SessionInfo>;
       resume: (id: string) => Promise<SessionInfo | null>;
       kill: (id: string) => Promise<boolean>;
       remove: (id: string) => Promise<boolean>;

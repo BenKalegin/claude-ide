@@ -64,7 +64,6 @@ function getOrCreateTerminal(sessionId: string): CachedTerminal {
     cursorBlink: false,
     cursorStyle: 'bar',
     cursorInactiveStyle: 'none',
-    scrollOnOutput: false,
   });
 
   const fitAddon = new FitAddon();
@@ -136,7 +135,7 @@ export function TerminalView({ sessionId }: Props): React.ReactElement {
       <div className="terminal-placeholder">
         <div className="placeholder-text">
           <span className="placeholder-icon">&#9654;</span>
-          <span>Select a project to open a Claude session</span>
+          <span>Select a project to open an agent session</span>
         </div>
       </div>
     );

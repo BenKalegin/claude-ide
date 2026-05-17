@@ -6,33 +6,37 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { createLogger } from './logger';
-import { SessionMode, SessionStatus, SessionActivity, IpcChannel, PTY_TERM, PTY_DEFAULT_COLS, PTY_DEFAULT_ROWS, ClaudeModel, DEFAULT_MODEL } from '../core/constants';
+import {
+  AgentProvider,
+  DEFAULT_AGENT_PROVIDER,
+  IpcChannel,
+  PTY_DEFAULT_COLS,
+  PTY_DEFAULT_ROWS,
+  PTY_TERM,
+  SessionActivity,
+  SessionMode,
+  SessionStatus,
+} from '../core/constants';
 import { createTtyState, ingest, snapshot, clearWaiting } from './tty-activity';
 import type { TtyActivitySnapshot } from './tty-activity';
+import { getDefaultModelForProvider, getTerminalProvider } from './agent-terminal-provider';
 
 const ACTIVITY_POLL_MS = 750;
 
 const log = createLogger('session');
 
-function resolveClaudePath(): string {
-  try {
-    return execSync('which claude', { encoding: 'utf-8', shell: '/bin/zsh' }).trim();
-  } catch {
-    return 'claude';
-  }
-}
-
 export interface SessionInfo {
   id: string;
   projectPath: string;
   projectName: string;
-  claudeSessionId?: string;
+  provider: AgentProvider;
+  providerSessionId?: string;
   status: SessionStatus;
   pid?: number;
   mode: SessionMode;
   title?: string;
   summary?: string;
-  model: ClaudeModel;
+  model: string;
   activity?: SessionActivity;
   activityDetail?: string;
   subagentCount?: number;
@@ -43,15 +47,16 @@ interface PersistedState {
     id: string;
     projectPath: string;
     projectName: string;
+    provider?: AgentProvider;
+    providerSessionId?: string;
     claudeSessionId?: string;
     mode: SessionMode;
     title?: string;
     summary?: string;
-    model?: ClaudeModel;
+    model?: string;
   }>;
 }
 
-const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const TITLE_MAX_CHARS = 40;
 const SUMMARY_MAX_CHARS = 200;
 const SUMMARIZE_MODEL = 'haiku';
@@ -59,6 +64,10 @@ const TITLE_GENERATION_DELAY = 10000;
 
 const STATE_DIR = path.join(os.homedir(), '.claude-ide');
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
+
+function normalizeAgentProvider(provider?: AgentProvider): AgentProvider {
+  return provider === AgentProvider.Codex ? AgentProvider.Codex : AgentProvider.Claude;
+}
 
 export class SessionManager {
   private sessions: Map<string, SessionInfo> = new Map();
@@ -78,32 +87,39 @@ export class SessionManager {
     this.window.webContents.send(channel, ...args);
   }
 
-  createSession(projectPath: string, mode: SessionMode = SessionMode.Terminal): SessionInfo {
+  createSession(
+    projectPath: string,
+    mode: SessionMode = SessionMode.Terminal,
+    provider: AgentProvider = DEFAULT_AGENT_PROVIDER
+  ): SessionInfo {
     const id = crypto.randomUUID();
     const projectName = path.basename(projectPath);
+    const model = getDefaultModelForProvider(provider);
 
     if (mode === SessionMode.Sdk) {
       const session: SessionInfo = {
         id,
         projectPath,
         projectName,
+        provider,
         status: SessionStatus.Stopped,
         mode: SessionMode.Sdk,
-        model: DEFAULT_MODEL,
+        model,
       };
       this.sessions.set(id, session);
       this.persistState();
       return session;
     }
 
-    log.info(`Creating terminal session: ${projectName} (${projectPath})`);
+    log.info(`Creating ${provider} terminal session: ${projectName} (${projectPath})`);
 
-    const claudePath = resolveClaudePath();
-    log.info(`Using claude at: ${claudePath}`);
+    const terminalProvider = getTerminalProvider(provider);
+    const executablePath = terminalProvider.resolveExecutable();
+    log.info(`Using ${provider} at: ${executablePath}`);
 
     let pty: IPty;
     try {
-      pty = ptySpawn(claudePath, ['--model', DEFAULT_MODEL], {
+      pty = ptySpawn(executablePath, terminalProvider.buildStartArgs(model), {
         name: PTY_TERM,
         cols: PTY_DEFAULT_COLS,
         rows: PTY_DEFAULT_ROWS,
@@ -116,9 +132,10 @@ export class SessionManager {
         id,
         projectPath,
         projectName,
+        provider,
         status: SessionStatus.Error,
         mode: SessionMode.Terminal,
-        model: DEFAULT_MODEL,
+        model,
       };
       this.sessions.set(id, session);
       this.persistState();
@@ -129,10 +146,11 @@ export class SessionManager {
       id,
       projectPath,
       projectName,
+      provider,
       status: SessionStatus.Active,
       pid: pty.pid,
       mode: SessionMode.Terminal,
-      model: DEFAULT_MODEL,
+      model,
     };
 
     log.info(`Session ${id} spawned, pid: ${pty.pid}`);
@@ -175,15 +193,11 @@ export class SessionManager {
     }
     if (session.status === SessionStatus.Active && this.ptys.has(id)) return session;
 
-    const claudePath = resolveClaudePath();
-    const args = session.claudeSessionId
-      ? ['--resume', session.claudeSessionId]
-      : ['--continue'];
-    if (session.model) {
-      args.push('--model', session.model);
-    }
+    const terminalProvider = getTerminalProvider(session.provider);
+    const executablePath = terminalProvider.resolveExecutable();
+    const args = terminalProvider.buildResumeArgs(session);
     log.info(`Resuming session ${id} with args: ${args.join(' ')}`);
-    const pty = ptySpawn(claudePath, args, {
+    const pty = ptySpawn(executablePath, args, {
       name: PTY_TERM,
       cols: PTY_DEFAULT_COLS,
       rows: PTY_DEFAULT_ROWS,
@@ -245,7 +259,7 @@ export class SessionManager {
     this.persistState();
   }
 
-  setModel(id: string, model: ClaudeModel): void {
+  setModel(id: string, model: string): void {
     const session = this.sessions.get(id);
     if (!session) return;
     session.model = model;
@@ -305,7 +319,8 @@ export class SessionManager {
           id: s.id,
           projectPath: s.projectPath,
           projectName: s.projectName,
-          claudeSessionId: s.claudeSessionId,
+          provider: s.provider,
+          providerSessionId: s.providerSessionId,
           mode: s.mode,
           title: s.title,
           summary: s.summary,
@@ -325,11 +340,14 @@ export class SessionManager {
       const state: PersistedState = JSON.parse(raw);
       for (const s of state.sessions) {
         if (!this.sessions.has(s.id)) {
+          const provider = normalizeAgentProvider(s.provider);
           this.sessions.set(s.id, {
             ...s,
+            provider,
+            providerSessionId: s.providerSessionId || s.claudeSessionId,
             status: SessionStatus.Stopped,
             mode: s.mode || SessionMode.Terminal,
-            model: s.model || DEFAULT_MODEL,
+            model: s.model || getDefaultModelForProvider(provider),
           });
         }
       }
@@ -372,8 +390,12 @@ export class SessionManager {
   private async updateTtyTitle(session: SessionInfo): Promise<void> {
     if (session.title) return;
     try {
+      const terminalProvider = getTerminalProvider(session.provider);
+      const projectsDir = terminalProvider.getHistoryDir?.(session.projectPath);
+      if (!projectsDir) return;
+
       const encodedCwd = session.projectPath.replace(/[^a-zA-Z0-9]/g, '-');
-      const sessionDir = path.join(CLAUDE_PROJECTS_DIR, encodedCwd);
+      const sessionDir = path.join(projectsDir, encodedCwd);
       log.debug(`TTY title: checking ${sessionDir}`);
       if (!fs.existsSync(sessionDir)) {
         log.debug(`TTY title: dir not found for ${session.projectName}`);
@@ -427,7 +449,7 @@ export class SessionManager {
       const excerpt = userMessages.slice(-3).join('\n');
       const prompt = `These are the last few user messages in a coding session:\n${excerpt}\nProvide a short title (3-6 words, max ${TITLE_MAX_CHARS} chars) summarizing what this session is about.\nReply ONLY as JSON: {"title": "..."}`;
 
-      const claudePath = resolveClaudePath();
+      const claudePath = getTerminalProvider(AgentProvider.Claude).resolveExecutable();
       const { execFile } = await import('child_process');
       const { promisify } = await import('util');
       const execFileAsync = promisify(execFile);

@@ -4,6 +4,14 @@ export const SessionMode = {
 } as const;
 export type SessionMode = (typeof SessionMode)[keyof typeof SessionMode];
 
+export const AgentProvider = {
+  Claude: 'claude',
+  Codex: 'codex',
+} as const;
+export type AgentProvider = (typeof AgentProvider)[keyof typeof AgentProvider];
+
+export const DEFAULT_AGENT_PROVIDER: AgentProvider = AgentProvider.Claude;
+
 export const SessionStatus = {
   Active: 'active',
   Stopped: 'stopped',
@@ -69,7 +77,13 @@ export const ClaudeModel = {
 } as const;
 export type ClaudeModel = (typeof ClaudeModel)[keyof typeof ClaudeModel];
 
+export const CodexModel = {
+  Default: 'default',
+} as const;
+export type CodexModel = (typeof CodexModel)[keyof typeof CodexModel];
+
 export const DEFAULT_MODEL: ClaudeModel = ClaudeModel.Sonnet;
+export const DEFAULT_CODEX_MODEL: CodexModel = CodexModel.Default;
 
 export const PTY_TERM = 'xterm-256color';
 export const PTY_DEFAULT_COLS = 120;

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useSessionStore } from '../stores/session-store';
+import { AgentProvider, SessionMode, SessionStatus } from '../../core/constants';
 
 export function Sidebar(): React.ReactElement {
   const sessions = useSessionStore((s) => s.sessions);
@@ -24,11 +25,11 @@ export function Sidebar(): React.ReactElement {
     return () => document.removeEventListener('click', handleClick);
   }, []);
 
-  const handleAddProject = async (mode: SessionMode) => {
+  const handleAddProject = async (mode: SessionMode, provider: AgentProvider) => {
     setShowModeMenu(false);
     const dir = await window.api.selectDirectory();
     if (!dir) return;
-    const session = await window.api.sessions.create(dir, mode);
+    const session = await window.api.sessions.create(dir, mode, provider);
     addSession(session);
     selectSession(session.id);
   };
@@ -50,7 +51,7 @@ export function Sidebar(): React.ReactElement {
   const handleKill = async (id: string) => {
     setContextMenu(null);
     await window.api.sessions.kill(id);
-    updateSession(id, { status: 'stopped', pid: undefined });
+    updateSession(id, { status: SessionStatus.Stopped, pid: undefined });
   };
 
   const handleRemove = async (id: string) => {
@@ -61,14 +62,17 @@ export function Sidebar(): React.ReactElement {
 
   const statusColor = (status: string) => {
     switch (status) {
-      case 'active': return 'var(--color-green)';
-      case 'thinking': return 'var(--color-yellow)';
-      case 'error': return 'var(--color-red)';
+      case SessionStatus.Active: return 'var(--color-green)';
+      case SessionStatus.Thinking: return 'var(--color-yellow)';
+      case SessionStatus.Error: return 'var(--color-red)';
       default: return 'var(--color-gray)';
     }
   };
 
   const sessionList = Array.from(sessions.values());
+
+  const providerLabel = (provider: AgentProvider | undefined): string =>
+    provider === AgentProvider.Codex ? 'Codex' : 'Claude';
 
   return (
     <div className="sidebar">
@@ -83,15 +87,20 @@ export function Sidebar(): React.ReactElement {
           >+</button>
           {showModeMenu && (
             <div className="add-mode-menu">
-              <button onClick={() => handleAddProject('terminal')}>
+              <button onClick={() => handleAddProject(SessionMode.Terminal, AgentProvider.Claude)}>
                 <span className="mode-icon">&#9654;</span>
-                Terminal Mode
+                Claude Terminal
                 <span className="mode-desc">Raw CLI with xterm.js</span>
               </button>
-              <button onClick={() => handleAddProject('sdk')}>
+              <button onClick={() => handleAddProject(SessionMode.Sdk, AgentProvider.Claude)}>
                 <span className="mode-icon">&#9671;</span>
-                SDK Mode
+                Claude SDK
                 <span className="mode-desc">Rich UI with hooks &amp; tools</span>
+              </button>
+              <button onClick={() => handleAddProject(SessionMode.Terminal, AgentProvider.Codex)}>
+                <span className="mode-icon">&#9654;</span>
+                Codex Terminal
+                <span className="mode-desc">Codex CLI with xterm.js</span>
               </button>
             </div>
           )}
@@ -110,7 +119,7 @@ export function Sidebar(): React.ReactElement {
               <div className="session-name-row">
                 <span className="project-name">{s.projectName}</span>
                 <span className={`mode-badge mode-${s.mode || 'terminal'}`}>
-                  {s.mode === 'sdk' ? 'SDK' : 'TTY'}
+                  {providerLabel(s.provider)} {s.mode === SessionMode.Sdk ? 'SDK' : 'TTY'}
                 </span>
               </div>
               <span className="project-path">{s.projectPath}</span>

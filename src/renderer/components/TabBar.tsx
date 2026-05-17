@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useSessionStore } from '../stores/session-store';
-import { SessionMode, SessionStatus } from '../../core/constants';
+import { AgentProvider, SessionMode, SessionStatus } from '../../core/constants';
 
 export function TabBar(): React.ReactElement {
   const sessions = useSessionStore((s) => s.sessions);
@@ -25,11 +25,11 @@ export function TabBar(): React.ReactElement {
     return () => document.removeEventListener('click', handleClick);
   }, []);
 
-  const handleAddProject = async (mode: SessionMode) => {
+  const handleAddProject = async (mode: SessionMode, provider: AgentProvider) => {
     setShowAddMenu(false);
     const dir = await window.api.selectDirectory();
     if (!dir) return;
-    const session = await window.api.sessions.create(dir, mode);
+    const session = await window.api.sessions.create(dir, mode, provider);
     addSession(session);
     selectSession(session.id);
   };
@@ -82,6 +82,9 @@ export function TabBar(): React.ReactElement {
 
   const sessionList = Array.from(sessions.values());
 
+  const providerLabel = (provider: AgentProvider | undefined): string =>
+    provider === AgentProvider.Codex ? 'Codex' : 'Claude';
+
   return (
     <>
       <div className="tab-bar" ref={tabsRef}>
@@ -96,7 +99,10 @@ export function TabBar(): React.ReactElement {
               <span className="tab-dot" style={{ backgroundColor: statusColor(s.status) }} />
               <span className="tab-name">{s.title || s.projectName}</span>
               {s.mode === SessionMode.Terminal && (
-                <span className="tab-mode tab-mode-terminal">TTY</span>
+                <span className="tab-mode tab-mode-terminal">{providerLabel(s.provider)} TTY</span>
+              )}
+              {s.mode === SessionMode.Sdk && (
+                <span className="tab-mode tab-mode-sdk">{providerLabel(s.provider)} SDK</span>
               )}
               <button
                 className="tab-close"
@@ -115,13 +121,17 @@ export function TabBar(): React.ReactElement {
           >+</button>
           {showAddMenu && (
             <div className="tab-add-menu">
-              <button onClick={() => handleAddProject(SessionMode.Terminal)}>
+              <button onClick={() => handleAddProject(SessionMode.Terminal, AgentProvider.Claude)}>
                 <span className="mode-icon">&#9654;</span>
-                Terminal (TTY)
+                Claude Terminal
               </button>
-              <button onClick={() => handleAddProject(SessionMode.Sdk)}>
+              <button onClick={() => handleAddProject(SessionMode.Sdk, AgentProvider.Claude)}>
                 <span className="mode-icon">&#9671;</span>
-                SDK Mode
+                Claude SDK
+              </button>
+              <button onClick={() => handleAddProject(SessionMode.Terminal, AgentProvider.Codex)}>
+                <span className="mode-icon">&#9654;</span>
+                Codex Terminal
               </button>
             </div>
           )}

@@ -9,7 +9,7 @@ import { UsageBar } from './components/UsageBar';
 import { SessionHeader } from './components/SessionHeader';
 import { useSessionStore } from './stores/session-store';
 import { applyTheme } from './lib/theme-applier';
-import { SessionMode } from '../core/constants';
+import { AgentProvider, SessionMode } from '../core/constants';
 
 export function App(): React.ReactElement {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
@@ -28,11 +28,11 @@ export function App(): React.ReactElement {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showNewMenu, setShowNewMenu] = useState(false);
 
-  const handleNewProject = async (mode: SessionMode) => {
+  const handleNewProject = async (mode: SessionMode, provider: AgentProvider) => {
     setShowNewMenu(false);
     const dir = await window.api.selectDirectory();
     if (!dir) return;
-    const session = await window.api.sessions.create(dir, mode);
+    const session = await window.api.sessions.create(dir, mode, provider);
     addSession(session);
     selectSession(session.id);
   };
@@ -105,11 +105,14 @@ export function App(): React.ReactElement {
               >+</button>
               {showNewMenu && (
                 <div className="sidebar-new-menu" onClick={(e) => e.stopPropagation()}>
-                  <button onClick={() => handleNewProject(SessionMode.Sdk)}>
-                    <span className="mode-icon">&#9671;</span> SDK
+                  <button onClick={() => handleNewProject(SessionMode.Sdk, AgentProvider.Claude)}>
+                    <span className="mode-icon">&#9671;</span> Claude SDK
                   </button>
-                  <button onClick={() => handleNewProject(SessionMode.Terminal)}>
-                    <span className="mode-icon">&#9654;</span> Terminal
+                  <button onClick={() => handleNewProject(SessionMode.Terminal, AgentProvider.Claude)}>
+                    <span className="mode-icon">&#9654;</span> Claude Terminal
+                  </button>
+                  <button onClick={() => handleNewProject(SessionMode.Terminal, AgentProvider.Codex)}>
+                    <span className="mode-icon">&#9654;</span> Codex Terminal
                   </button>
                 </div>
               )}

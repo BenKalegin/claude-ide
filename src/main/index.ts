@@ -5,7 +5,13 @@ import * as os from 'os';
 import log, { createLogger, getLogPath } from './logger';
 import { SessionManager } from './session-manager';
 import { SdkSessionManager } from './sdk-session-manager';
-import { IpcChannel, SessionMode, SessionStatus, ClaudeModel } from '../core/constants';
+import {
+  AgentProvider,
+  DEFAULT_AGENT_PROVIDER,
+  IpcChannel,
+  SessionMode,
+  SessionStatus,
+} from '../core/constants';
 
 const mainLog = createLogger('main');
 const ipcLog = createLogger('ipc');
@@ -73,17 +79,25 @@ app.whenReady().then(() => {
   sessionManager.startProcessMonitor();
   sessionManager.startActivityMonitor();
 
-  ipcMain.handle(IpcChannel.CreateSession, async (_e, projectPath: string, mode: SessionMode = SessionMode.Terminal) => {
-    ipcLog.info('create-session', { projectPath, mode });
-    if (mode === SessionMode.Sdk) {
-      const s = await sdkSessionManager.createSession(projectPath);
-      ipcLog.info('SDK session created:', s.id);
+  ipcMain.handle(
+    IpcChannel.CreateSession,
+    async (
+      _e,
+      projectPath: string,
+      mode: SessionMode = SessionMode.Terminal,
+      provider: AgentProvider = DEFAULT_AGENT_PROVIDER
+    ) => {
+      ipcLog.info('create-session', { projectPath, mode, provider });
+      if (mode === SessionMode.Sdk) {
+        const s = await sdkSessionManager.createSession(projectPath, provider);
+        ipcLog.info('SDK session created:', s.id);
+        return s;
+      }
+      const s = sessionManager.createSession(projectPath, mode, provider);
+      ipcLog.info('Terminal session created:', s.id, 'pid:', s.pid);
       return s;
     }
-    const s = sessionManager.createSession(projectPath, mode);
-    ipcLog.info('Terminal session created:', s.id, 'pid:', s.pid);
-    return s;
-  });
+  );
 
   ipcMain.handle(IpcChannel.ResumeSession, async (_e, id: string) => {
     ipcLog.info('resume-session', id);
@@ -137,10 +151,12 @@ app.whenReady().then(() => {
       id: s.id,
       projectPath: s.projectPath,
       projectName: s.projectName,
-      claudeSessionId: s.claudeSessionId,
+      provider: s.provider,
+      providerSessionId: s.providerSessionId,
       status: s.status,
       mode: SessionMode.Sdk,
       totalCost: s.totalCost,
+      model: s.model,
       title: s.title,
       summary: s.summary,
     }));
@@ -201,7 +217,7 @@ app.whenReady().then(() => {
     return sdkSessionManager.getUsageSummary();
   });
 
-  ipcMain.handle(IpcChannel.SetSessionModel, async (_e, id: string, model: ClaudeModel) => {
+  ipcMain.handle(IpcChannel.SetSessionModel, async (_e, id: string, model: string) => {
     const sdkSession = sdkSessionManager.getSession(id);
     if (sdkSession) {
       sdkSessionManager.setModel(id, model);
