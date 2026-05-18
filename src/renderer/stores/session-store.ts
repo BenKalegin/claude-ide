@@ -1,10 +1,55 @@
 import { create } from 'zustand';
-import { DEFAULT_THEME_ID } from '../../core/themes';
+import { DEFAULT_THEME_ID, findTheme } from '../../core/themes';
 import type { ThemeId } from '../../core/themes';
 
 const SIDEBAR_MIN = 140;
 const SIDEBAR_MAX = 400;
 const SIDEBAR_DEFAULT = 200;
+const SIDEBAR_WIDTH_STORAGE_KEY = 'claude-ide:sidebar-width';
+const THEME_ID_STORAGE_KEY = 'claude-ide:theme-id';
+
+function clampSidebarWidth(width: number): number {
+  return Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, width));
+}
+
+function loadSidebarWidth(): number {
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    if (raw === null) return SIDEBAR_DEFAULT;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return SIDEBAR_DEFAULT;
+    return clampSidebarWidth(parsed);
+  } catch {
+    return SIDEBAR_DEFAULT;
+  }
+}
+
+function saveSidebarWidth(width: number): void {
+  try {
+    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
+  } catch {
+    // localStorage unavailable (private mode, quota) — silent no-op
+  }
+}
+
+function loadThemeId(): ThemeId {
+  try {
+    const raw = window.localStorage.getItem(THEME_ID_STORAGE_KEY);
+    if (raw === null) return DEFAULT_THEME_ID;
+    // findTheme returns undefined for unknown IDs (renamed/removed between versions).
+    return findTheme(raw as ThemeId) ? (raw as ThemeId) : DEFAULT_THEME_ID;
+  } catch {
+    return DEFAULT_THEME_ID;
+  }
+}
+
+function saveThemeId(id: ThemeId): void {
+  try {
+    window.localStorage.setItem(THEME_ID_STORAGE_KEY, id);
+  } catch {
+    // localStorage unavailable (private mode, quota) — silent no-op
+  }
+}
 
 interface SessionState {
   sessions: Map<string, SessionInfo>;
@@ -37,8 +82,8 @@ export const useSessionStore = create<SessionState>((set) => ({
   processes: new Map(),
   sdkMessages: new Map(),
   projectNames: new Map(),
-  themeId: DEFAULT_THEME_ID as ThemeId,
-  sidebarWidth: SIDEBAR_DEFAULT,
+  themeId: loadThemeId(),
+  sidebarWidth: loadSidebarWidth(),
   usageSummary: null,
 
   setSessions: (sessions) =>
@@ -101,7 +146,10 @@ export const useSessionStore = create<SessionState>((set) => ({
       return { sdkMessages };
     }),
 
-  setThemeId: (id) => set({ themeId: id }),
+  setThemeId: (id) => {
+    saveThemeId(id);
+    set({ themeId: id });
+  },
 
   setProjectName: (path, name) =>
     set((state) => {
@@ -117,9 +165,11 @@ export const useSessionStore = create<SessionState>((set) => ({
     }),
 
   resizeSidebar: (delta) =>
-    set((state) => ({
-      sidebarWidth: Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, state.sidebarWidth + delta)),
-    })),
+    set((state) => {
+      const sidebarWidth = clampSidebarWidth(state.sidebarWidth + delta);
+      saveSidebarWidth(sidebarWidth);
+      return { sidebarWidth };
+    }),
 
   setUsageSummary: (summary) => set({ usageSummary: summary }),
 }));

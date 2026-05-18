@@ -231,6 +231,7 @@ app.whenReady().then(() => {
 
   // Wait for renderer to load before resuming sessions
   win.webContents.on('did-finish-load', () => {
+    sessionManager.migrateProviderSessionIds();
     sessionManager.autoResumeSessions();
     sessionManager.startTitleUpdater();
   });

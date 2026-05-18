@@ -17,6 +17,14 @@ const CODEX_MODELS = [
   { value: DEFAULT_CODEX_MODEL, label: 'Default' },
 ] as const;
 
+const TTY_SHORTCUTS: Array<[string, string]> = [
+  ['⌘Z / ⇧⌘Z', 'Undo / redo last typed-or-pasted chunk'],
+  ['⌘⌫', 'Clear entire prompt'],
+  ['⌘← / ⌘→', 'Jump to line start / end'],
+  ['⌥← / ⌥→', 'Move word back / forward'],
+  ['⌥⌫', 'Delete previous word'],
+];
+
 interface Props {
   sessionId: string;
 }
@@ -41,12 +49,28 @@ export function SessionHeader({ sessionId }: Props): React.ReactElement | null {
     await window.api.sessions.setModel(sessionId, model);
   };
 
+  const isTty = session.mode === 'terminal';
+
   return (
     <div className="session-header">
       <span className="session-header-project">{displayProject}</span>
       <span className="session-header-sep">/</span>
       <span className="session-header-name">{displaySession}</span>
       <span className="session-header-provider">{providerLabel}</span>
+      {isTty && (
+        <span className="session-header-help" aria-label="Prompt editor shortcuts" tabIndex={0}>
+          ?
+          <span className="session-header-help-popover" role="tooltip">
+            <span className="session-header-help-title">Prompt shortcuts</span>
+            {TTY_SHORTCUTS.map(([keys, desc]) => (
+              <span key={keys} className="session-header-help-row">
+                <kbd>{keys}</kbd>
+                <span>{desc}</span>
+              </span>
+            ))}
+          </span>
+        </span>
+      )}
       <select
         className="session-header-model"
         value={session.model || fallbackModel}

@@ -22,6 +22,8 @@ import type { TtyActivitySnapshot } from './tty-activity';
 import { getDefaultModelForProvider, getTerminalProvider } from './agent-terminal-provider';
 
 const ACTIVITY_POLL_MS = 750;
+const PROVIDER_SESSION_ID_DETECT_MS = 6000;
+const PROVIDER_SESSION_ID_POLL_MS = 500;
 
 const log = createLogger('session');
 
@@ -117,6 +119,7 @@ export class SessionManager {
     const executablePath = terminalProvider.resolveExecutable();
     log.info(`Using ${provider} at: ${executablePath}`);
 
+    const historyBaseline = this.snapshotProviderHistory(provider, projectPath);
     let pty: IPty;
     try {
       pty = ptySpawn(executablePath, terminalProvider.buildStartArgs(model), {
@@ -180,6 +183,9 @@ export class SessionManager {
 
     this.persistState();
     this.scheduleTitleGeneration(id);
+    this.detectProviderSessionId(id, historyBaseline).catch((e) =>
+      log.warn(`providerSessionId detect failed for ${id}: ${e}`)
+    );
     return session;
   }
 
@@ -197,6 +203,9 @@ export class SessionManager {
     const executablePath = terminalProvider.resolveExecutable();
     const args = terminalProvider.buildResumeArgs(session);
     log.info(`Resuming session ${id} with args: ${args.join(' ')}`);
+    const historyBaseline = session.providerSessionId
+      ? new Set<string>()
+      : this.snapshotProviderHistory(session.provider, session.projectPath);
     const pty = ptySpawn(executablePath, args, {
       name: PTY_TERM,
       cols: PTY_DEFAULT_COLS,
@@ -229,6 +238,11 @@ export class SessionManager {
 
     this.persistState();
     this.scheduleTitleGeneration(id);
+    if (!session.providerSessionId) {
+      this.detectProviderSessionId(id, historyBaseline).catch((e) =>
+        log.warn(`providerSessionId detect failed for ${id}: ${e}`)
+      );
+    }
     return session;
   }
 
@@ -513,6 +527,81 @@ export class SessionManager {
       clearInterval(this.activityTimer);
       this.activityTimer = null;
     }
+  }
+
+  private providerSessionDir(provider: AgentProvider, projectPath: string): string | null {
+    const historyDir = getTerminalProvider(provider).getHistoryDir?.(projectPath);
+    if (!historyDir) return null;
+    const encodedCwd = projectPath.replace(/[^a-zA-Z0-9]/g, '-');
+    return path.join(historyDir, encodedCwd);
+  }
+
+  private snapshotProviderHistory(provider: AgentProvider, projectPath: string): Set<string> {
+    const dir = this.providerSessionDir(provider, projectPath);
+    if (!dir || !fs.existsSync(dir)) return new Set();
+    return new Set(fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl')));
+  }
+
+  private async detectProviderSessionId(sessionId: string, baseline: Set<string>): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.providerSessionId) return;
+    const sessionDir = this.providerSessionDir(session.provider, session.projectPath);
+    if (!sessionDir) return;
+    const claimed = new Set(
+      Array.from(this.sessions.values())
+        .filter((s) => s.id !== sessionId && s.providerSessionId)
+        .map((s) => `${s.providerSessionId}.jsonl`)
+    );
+    const start = Date.now();
+    while (Date.now() - start < PROVIDER_SESSION_ID_DETECT_MS) {
+      await new Promise((r) => setTimeout(r, PROVIDER_SESSION_ID_POLL_MS));
+      if (this.sessions.get(sessionId)?.providerSessionId) return;
+      if (!fs.existsSync(sessionDir)) continue;
+      const current = fs.readdirSync(sessionDir).filter((f) => f.endsWith('.jsonl'));
+      const candidates = current.filter((f) => !baseline.has(f) && !claimed.has(f));
+      if (candidates.length === 0) continue;
+      const sorted = candidates
+        .map((f) => ({ f, mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
+        .sort((a, b) => a.mtime - b.mtime);
+      const picked = sorted[0].f.replace(/\.jsonl$/, '');
+      session.providerSessionId = picked;
+      this.persistState();
+      log.info(`Session ${sessionId} bound to providerSessionId ${picked}`);
+      return;
+    }
+    log.warn(`Failed to detect providerSessionId for session ${sessionId} within ${PROVIDER_SESSION_ID_DETECT_MS}ms`);
+  }
+
+  migrateProviderSessionIds(): void {
+    const byProject = new Map<string, SessionInfo[]>();
+    for (const s of this.sessions.values()) {
+      if (s.mode !== SessionMode.Terminal || s.providerSessionId) continue;
+      const key = `${s.provider}::${s.projectPath}`;
+      const list = byProject.get(key) || [];
+      list.push(s);
+      byProject.set(key, list);
+    }
+    for (const sessions of byProject.values()) {
+      const first = sessions[0];
+      const sessionDir = this.providerSessionDir(first.provider, first.projectPath);
+      if (!sessionDir || !fs.existsSync(sessionDir)) continue;
+      const claimed = new Set(
+        Array.from(this.sessions.values())
+          .filter((s) => s.providerSessionId)
+          .map((s) => `${s.providerSessionId}.jsonl`)
+      );
+      const available = fs.readdirSync(sessionDir)
+        .filter((f) => f.endsWith('.jsonl') && !claimed.has(f))
+        .map((f) => ({ f, mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+      sessions.sort((a, b) => a.id.localeCompare(b.id));
+      for (let i = 0; i < sessions.length && i < available.length; i++) {
+        const id = available[i].f.replace(/\.jsonl$/, '');
+        sessions[i].providerSessionId = id;
+        log.info(`Migrated session ${sessions[i].id} → providerSessionId ${id}`);
+      }
+    }
+    this.persistState();
   }
 
   private ingestPtyData(id: string, data: string): void {

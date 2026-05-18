@@ -88,3 +88,15 @@ export const DEFAULT_CODEX_MODEL: CodexModel = CodexModel.Default;
 export const PTY_TERM = 'xterm-256color';
 export const PTY_DEFAULT_COLS = 120;
 export const PTY_DEFAULT_ROWS = 30;
+
+// Control bytes the Claude CLI's line editor responds to (standard readline conventions).
+export const TtyKeySequence = {
+  Backspace: '\x7f',
+  KillLine: '\x15', // Ctrl+U — clear from cursor to start of line
+  KillWord: '\x17', // Ctrl+W — delete previous word
+  LineStart: '\x01', // Ctrl+A
+  LineEnd: '\x05', // Ctrl+E
+  WordBack: '\x1bb', // Esc+b
+  WordForward: '\x1bf', // Esc+f
+} as const;
+export type TtyKeySequence = (typeof TtyKeySequence)[keyof typeof TtyKeySequence];

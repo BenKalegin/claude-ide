@@ -541,6 +541,79 @@ html, body, #root {
   border-color: var(--color-blue);
 }
 
+.session-header-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: help;
+  user-select: none;
+  outline: none;
+}
+
+.session-header-help:hover,
+.session-header-help:focus-visible {
+  color: var(--color-text);
+  border-color: var(--color-blue);
+}
+
+.session-header-help-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  font-size: 11px;
+  color: var(--color-text);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.session-header-help:hover .session-header-help-popover,
+.session-header-help:focus-visible .session-header-help-popover {
+  display: flex;
+}
+
+.session-header-help-title {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+
+.session-header-help-row {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.session-header-help-row kbd {
+  font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+  font-size: 10px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: var(--color-text);
+}
+
 .content-area {
   flex: 1;
   display: flex;

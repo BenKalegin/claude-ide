@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
+import { TtyKeySequence } from '../../core/constants';
 
 interface Props {
   sessionId: string | null;
@@ -13,10 +14,115 @@ interface CachedTerminal {
   element: HTMLDivElement;
 }
 
+// Per-session undo/redo stack for the in-CLI prompt editor.
+// A chunk = one batch of input the user typed or pasted; on Cmd+Z we send
+// one backspace per character in the most recent chunk.
+interface InputTracker {
+  undoStack: string[];
+  redoStack: string[];
+}
+
 const terminalCache = new Map<string, CachedTerminal>();
+const inputTrackers = new Map<string, InputTracker>();
 
 // Buffer data for terminals not yet created
 const pendingData = new Map<string, string[]>();
+
+function getTracker(sessionId: string): InputTracker {
+  let tracker = inputTrackers.get(sessionId);
+  if (!tracker) {
+    tracker = { undoStack: [], redoStack: [] };
+    inputTrackers.set(sessionId, tracker);
+  }
+  return tracker;
+}
+
+function isPlainInput(data: string): boolean {
+  // Escape sequences (arrows, function keys) start with ESC.
+  if (data.charCodeAt(0) === 0x1b) return false;
+  // Single control bytes (Ctrl+*, Backspace, etc.) — not user-typed text.
+  if (data.length === 1 && data.charCodeAt(0) < 0x20 && data !== '\t') return false;
+  if (data === TtyKeySequence.Backspace) return false;
+  return true;
+}
+
+function recordInput(sessionId: string, data: string): void {
+  const tracker = getTracker(sessionId);
+  // Enter submits the prompt — the CLI clears its buffer, so we clear ours too.
+  if (data.includes('\r') || data.includes('\n')) {
+    tracker.undoStack.length = 0;
+    tracker.redoStack.length = 0;
+    return;
+  }
+  if (!isPlainInput(data)) {
+    // Backspace invalidates the redo history (user is editing forward again).
+    if (data === TtyKeySequence.Backspace) tracker.redoStack.length = 0;
+    return;
+  }
+  tracker.undoStack.push(data);
+  tracker.redoStack.length = 0;
+}
+
+function undoLastChunk(sessionId: string): void {
+  const tracker = getTracker(sessionId);
+  const chunk = tracker.undoStack.pop();
+  if (!chunk) return;
+  tracker.redoStack.push(chunk);
+  window.api.sessions.write(sessionId, TtyKeySequence.Backspace.repeat(chunk.length));
+}
+
+function redoLastChunk(sessionId: string): void {
+  const tracker = getTracker(sessionId);
+  const chunk = tracker.redoStack.pop();
+  if (!chunk) return;
+  tracker.undoStack.push(chunk);
+  window.api.sessions.write(sessionId, chunk);
+}
+
+function handleEditingShortcut(sessionId: string, event: KeyboardEvent): boolean {
+  if (event.type !== 'keydown') return true;
+  const { metaKey: cmd, altKey: alt, shiftKey: shift, key } = event;
+  if (!cmd && !alt) return true;
+
+  let sequence: string | null = null;
+  let handled = true;
+
+  if (cmd && !alt && key === 'z') {
+    if (shift) redoLastChunk(sessionId);
+    else undoLastChunk(sessionId);
+  } else if (cmd && key === 'Backspace') {
+    sequence = TtyKeySequence.KillLine;
+  } else if (cmd && key === 'ArrowLeft') {
+    sequence = TtyKeySequence.LineStart;
+  } else if (cmd && key === 'ArrowRight') {
+    sequence = TtyKeySequence.LineEnd;
+  } else if (alt && key === 'Backspace') {
+    sequence = TtyKeySequence.KillWord;
+  } else if (alt && key === 'ArrowLeft') {
+    sequence = TtyKeySequence.WordBack;
+  } else if (alt && key === 'ArrowRight') {
+    sequence = TtyKeySequence.WordForward;
+  } else {
+    handled = false;
+  }
+
+  if (sequence !== null) {
+    window.api.sessions.write(sessionId, sequence);
+    // Cmd+Backspace wipes the prompt — drop the stacks so undo doesn't try
+    // to backspace into already-cleared input.
+    if (sequence === TtyKeySequence.KillLine) {
+      const tracker = getTracker(sessionId);
+      tracker.undoStack.length = 0;
+      tracker.redoStack.length = 0;
+    }
+  }
+
+  if (handled) {
+    event.preventDefault();
+    return false;
+  }
+  return true;
+}
 
 // Global data listener
 let globalUnsub: (() => void) | null = null;
@@ -79,7 +185,10 @@ function getOrCreateTerminal(sessionId: string): CachedTerminal {
     pendingData.delete(sessionId);
   }
 
+  terminal.attachCustomKeyEventHandler((event) => handleEditingShortcut(sessionId, event));
+
   terminal.onData((data) => {
+    recordInput(sessionId, data);
     window.api.sessions.write(sessionId, data);
   });
 
@@ -152,4 +261,5 @@ export function disposeTerminal(sessionId: string): void {
     terminalCache.delete(sessionId);
   }
   pendingData.delete(sessionId);
+  inputTrackers.delete(sessionId);
 }
