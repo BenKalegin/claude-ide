@@ -7,6 +7,7 @@ const SIDEBAR_MAX = 400;
 const SIDEBAR_DEFAULT = 200;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'claude-ide:sidebar-width';
 const THEME_ID_STORAGE_KEY = 'claude-ide:theme-id';
+const PROJECT_ACTIVITY_STORAGE_KEY = 'claude-ide:project-activity';
 
 function clampSidebarWidth(width: number): number {
   return Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, width));
@@ -27,6 +28,31 @@ function loadSidebarWidth(): number {
 function saveSidebarWidth(width: number): void {
   try {
     window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
+  } catch {
+    // localStorage unavailable (private mode, quota) — silent no-op
+  }
+}
+
+function loadProjectActivity(): Record<string, number> {
+  try {
+    const raw = window.localStorage.getItem(PROJECT_ACTIVITY_STORAGE_KEY);
+    if (raw === null) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return {};
+    // Keep only well-formed numeric entries — guards against hand-edited/corrupt data.
+    const result: Record<string, number> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === 'number' && Number.isFinite(value)) result[key] = value;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function saveProjectActivity(activity: Record<string, number>): void {
+  try {
+    window.localStorage.setItem(PROJECT_ACTIVITY_STORAGE_KEY, JSON.stringify(activity));
   } catch {
     // localStorage unavailable (private mode, quota) — silent no-op
   }
@@ -57,6 +83,8 @@ interface SessionState {
   processes: Map<string, ChildProcess[]>;
   sdkMessages: Map<string, SdkMessage[]>;
   projectNames: Map<string, string>;
+  /** projectPath → last time the user opened/selected it. Persisted; drives the launch-time sidebar sort. */
+  projectActivity: Record<string, number>;
   themeId: ThemeId;
   sidebarWidth: number;
   usageSummary: UsageSummary | null;
@@ -82,6 +110,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   processes: new Map(),
   sdkMessages: new Map(),
   projectNames: new Map(),
+  projectActivity: loadProjectActivity(),
   themeId: loadThemeId(),
   sidebarWidth: loadSidebarWidth(),
   usageSummary: null,
@@ -107,7 +136,9 @@ export const useSessionStore = create<SessionState>((set) => ({
     set((state) => {
       const sessions = new Map(state.sessions);
       sessions.set(session.id, session);
-      return { sessions };
+      const projectActivity = { ...state.projectActivity, [session.projectPath]: Date.now() };
+      saveProjectActivity(projectActivity);
+      return { sessions, projectActivity };
     }),
 
   removeSession: (id) =>
@@ -122,7 +153,16 @@ export const useSessionStore = create<SessionState>((set) => ({
       return { sessions, processes, sdkMessages, activeSessionId };
     }),
 
-  selectSession: (id) => set({ activeSessionId: id }),
+  selectSession: (id) =>
+    set((state) => {
+      if (id === null) return { activeSessionId: id };
+      const session = state.sessions.get(id);
+      if (!session) return { activeSessionId: id };
+      // Bump recency for next launch's sort; the live order stays frozen (see ProjectTree).
+      const projectActivity = { ...state.projectActivity, [session.projectPath]: Date.now() };
+      saveProjectActivity(projectActivity);
+      return { activeSessionId: id, projectActivity };
+    }),
 
   setProcesses: (id, procs) =>
     set((state) => {

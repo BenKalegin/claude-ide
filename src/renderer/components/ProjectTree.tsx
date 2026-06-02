@@ -16,6 +16,7 @@ export function ProjectTree(): React.ReactElement {
   const selectSession = useSessionStore((s) => s.selectSession);
   const removeSession = useSessionStore((s) => s.removeSession);
   const projectNames = useSessionStore((s) => s.projectNames);
+  const projectActivity = useSessionStore((s) => s.projectActivity);
   const setProjectName = useSessionStore((s) => s.setProjectName);
   const addSession = useSessionStore((s) => s.addSession);
   const [editingPath, setEditingPath] = useState<string | null>(null);
@@ -39,6 +40,32 @@ export function ProjectTree(): React.ReactElement {
     }
     return Array.from(map.values());
   }, [sessions, projectNames]);
+
+  // "Sticky recency" ordering. The displayed order lives in this ref and is held
+  // frozen while you work: switching between projects never moves them. It only
+  // changes in two ways — at launch the whole list sorts by recency, and a project
+  // that newly appears is prepended (it's the one you just opened). Closed projects
+  // drop out. Recency itself (projectActivity) is bumped on select/create in the store.
+  const orderRef = useRef<string[]>([]);
+  const orderedGroups = useMemo(() => {
+    const byPath = new Map(groups.map((g) => [g.projectPath, g]));
+    const currentPaths = groups.map((g) => g.projectPath);
+    const prev = orderRef.current;
+    const byRecencyDesc = (a: string, b: string) =>
+      (projectActivity[b] ?? 0) - (projectActivity[a] ?? 0);
+
+    let order: string[];
+    if (prev.length === 0) {
+      // First populated render (launch): sort everything by recency, most recent first.
+      order = [...currentPaths].sort(byRecencyDesc);
+    } else {
+      const kept = prev.filter((p) => byPath.has(p));
+      const added = currentPaths.filter((p) => !prev.includes(p)).sort(byRecencyDesc);
+      order = [...added, ...kept];
+    }
+    orderRef.current = order;
+    return order.map((p) => byPath.get(p)).filter((g): g is ProjectGroup => g !== undefined);
+  }, [groups, projectActivity]);
 
   useEffect(() => {
     if (editingPath && inputRef.current) {
@@ -130,13 +157,13 @@ export function ProjectTree(): React.ReactElement {
     }
   };
 
-  if (groups.length === 0) {
+  if (orderedGroups.length === 0) {
     return <div className="tree-empty">No active sessions</div>;
   }
 
   return (
     <div className="project-tree">
-      {groups.map((group) => (
+      {orderedGroups.map((group) => (
         <div key={group.projectPath} className="tree-project">
           <div className="tree-project-header">
             <span className="tree-folder-icon">&#9662;</span>
