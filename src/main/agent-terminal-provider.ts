@@ -17,7 +17,18 @@ const CliArg = {
   Continue: '--continue',
   Model: '--model',
   Resume: '--resume',
+  PermissionMode: '--permission-mode',
+  DisallowedTools: '--disallowedTools',
+  SessionId: '--session-id',
 } as const;
+
+// "Unbounded" sessions auto-run every tool with no prompts, but keep the
+// permission layer active so git stays blocked. We use `auto` (not
+// `bypassPermissions`, which skips the permission layer entirely and would
+// ignore the deny rule below). The pattern matches any command starting
+// with "git " — commit, push, etc.
+const UNBOUNDED_PERMISSION_MODE = 'auto';
+const GIT_DENY_PATTERN = 'Bash(git *)';
 
 const Platform = {
   Windows: 'win32',
@@ -40,17 +51,32 @@ const WINDOWS_CODEX_EXE = 'codex.exe';
 export interface TerminalProviderSession {
   model?: string;
   providerSessionId?: string;
+  unbounded?: boolean;
 }
 
 export interface AgentTerminalProvider {
   readonly provider: AgentProvider;
   resolveExecutable(): string;
-  buildStartArgs(model?: string): string[];
+  buildStartArgs(model?: string, unbounded?: boolean, sessionId?: string): string[];
   buildResumeArgs(session: TerminalProviderSession): string[];
   getHistoryDir?(projectPath: string): string;
 }
 
+// Memoized: resolution shells out synchronously (`which`/`where`), and it runs
+// on every session create/resume — at launch that's one sync spawn per resumed
+// session, all blocking the main process. The binary's location doesn't change
+// within an app run, so resolve each command once.
+const resolvedCommandPaths = new Map<string, string>();
+
 function resolveCommandPath(command: string): string {
+  const cached = resolvedCommandPaths.get(command);
+  if (cached) return cached;
+  const resolved = resolveCommandPathUncached(command);
+  resolvedCommandPaths.set(command, resolved);
+  return resolved;
+}
+
+function resolveCommandPathUncached(command: string): string {
   try {
     if (process.platform === Platform.Windows) {
       const localCodexPath = command === TerminalCommand.Codex ? resolveWindowsLocalCodexPath() : null;
@@ -93,6 +119,14 @@ function buildClaudeModelArgs(model?: string): string[] {
   return [CliArg.Model, model || DEFAULT_MODEL];
 }
 
+function buildClaudeUnboundedArgs(unbounded?: boolean): string[] {
+  if (!unbounded) return [];
+  return [
+    CliArg.PermissionMode, UNBOUNDED_PERMISSION_MODE,
+    CliArg.DisallowedTools, GIT_DENY_PATTERN,
+  ];
+}
+
 function buildCodexModelArgs(model?: string): string[] {
   if (!model || model === DEFAULT_CODEX_MODEL) return [];
   return [CliArg.Model, model];
@@ -101,12 +135,24 @@ function buildCodexModelArgs(model?: string): string[] {
 const claudeTerminalProvider: AgentTerminalProvider = {
   provider: AgentProvider.Claude,
   resolveExecutable: () => resolveCommandPath(TerminalCommand.Claude),
-  buildStartArgs: (model) => buildClaudeModelArgs(model),
+  // Pin the transcript id to our own session id with --session-id so the file
+  // is known deterministically (claude writes <sessionId>.jsonl). This removes
+  // the race-prone "watch the dir for a new file" detection on fresh starts —
+  // the source of sessions binding to the wrong/old transcript after restart.
+  buildStartArgs: (model, unbounded, sessionId) => [
+    ...(sessionId ? [CliArg.SessionId, sessionId] : []),
+    ...buildClaudeModelArgs(model),
+    ...buildClaudeUnboundedArgs(unbounded),
+  ],
   buildResumeArgs: (session) => {
     const args = session.providerSessionId
       ? [CliArg.Resume, session.providerSessionId]
       : [CliArg.Continue];
-    return [...args, ...buildClaudeModelArgs(session.model)];
+    return [
+      ...args,
+      ...buildClaudeModelArgs(session.model),
+      ...buildClaudeUnboundedArgs(session.unbounded),
+    ];
   },
   getHistoryDir: () => CLAUDE_PROJECTS_DIR,
 };

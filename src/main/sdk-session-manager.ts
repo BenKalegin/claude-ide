@@ -13,6 +13,7 @@ import {
   SessionStatus,
   SdkMessageType,
 } from '../core/constants';
+import type { SdkImage } from '../core/constants';
 import { getDefaultModelForProvider } from './agent-terminal-provider';
 
 const log = createLogger('sdk');
@@ -84,6 +85,26 @@ function normalizeAgentProvider(provider?: AgentProvider): AgentProvider {
   return provider === AgentProvider.Codex ? AgentProvider.Codex : AgentProvider.Claude;
 }
 
+// Build a one-shot async iterable of SDKUserMessage with mixed text + image
+// content blocks. The SDK closes stdin once this generator returns.
+function buildMultimodalPrompt(text: string, images: SdkImage[]): AsyncIterable<unknown> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      const content: Array<Record<string, unknown>> = images.map((img) => ({
+        type: 'image',
+        source: { type: 'base64', media_type: img.mediaType, data: img.base64 },
+      }));
+      if (text) content.push({ type: 'text', text });
+      yield {
+        type: 'user',
+        session_id: '',
+        parent_tool_use_id: null,
+        message: { role: 'user', content },
+      };
+    },
+  };
+}
+
 interface ActiveQuery {
   controller: AbortController;
   query?: { interrupt(): Promise<void> };
@@ -134,11 +155,12 @@ export class SdkSessionManager {
     return session;
   }
 
-  async sendMessage(id: string, prompt: string): Promise<void> {
+  async sendMessage(id: string, prompt: string, images?: SdkImage[]): Promise<void> {
     const session = this.sessions.get(id);
     if (!session) return;
 
-    log.info(`SDK query: session=${id}, prompt="${prompt.substring(0, 80)}"`);
+    const imageCount = images?.length ?? 0;
+    log.info(`SDK query: session=${id}, prompt="${prompt.substring(0, 80)}", images=${imageCount}`);
 
     if (session.provider !== AgentProvider.Claude) {
       const errorMsg: SdkMessage = {
@@ -154,9 +176,12 @@ export class SdkSessionManager {
     session.status = SessionStatus.Thinking;
     this.emitStatus(id, SessionStatus.Thinking);
 
+    const userBubbleText = imageCount > 0
+      ? (prompt ? `${prompt}\n[${imageCount} image${imageCount === 1 ? '' : 's'} attached]` : `[${imageCount} image${imageCount === 1 ? '' : 's'} attached]`)
+      : prompt;
     const userMsg: SdkMessage = {
       type: SdkMessageType.User,
-      content: prompt,
+      content: userBubbleText,
       timestamp: Date.now(),
     };
     session.messages.push(userMsg);
@@ -181,8 +206,12 @@ export class SdkSessionManager {
         (options as Record<string, unknown>).resume = session.providerSessionId;
       }
 
+      const queryPrompt = imageCount > 0
+        ? buildMultimodalPrompt(prompt, images!)
+        : prompt;
+
       const q = query({
-        prompt,
+        prompt: queryPrompt as Parameters<typeof query>[0]['prompt'],
         options: options as Parameters<typeof query>[0]['options'],
       });
       active.query = q;

@@ -30,6 +30,7 @@ export const IpcChannel = {
   KillChildProcess: 'kill-child-process',
   WriteToSession: 'write-to-session',
   ResizeSession: 'resize-session',
+  SetActiveSession: 'set-active-session',
   SdkSendMessage: 'sdk-send-message',
   SdkCancelQuery: 'sdk-cancel-query',
   SdkInterruptQuery: 'sdk-interrupt-query',
@@ -74,6 +75,7 @@ export const ClaudeModel = {
   Sonnet: 'sonnet',
   Opus: 'opus',
   Haiku: 'haiku',
+  Fable: 'fable',
 } as const;
 export type ClaudeModel = (typeof ClaudeModel)[keyof typeof ClaudeModel];
 
@@ -88,6 +90,22 @@ export const DEFAULT_CODEX_MODEL: CodexModel = CodexModel.Default;
 export const PTY_TERM = 'xterm-256color';
 export const PTY_DEFAULT_COLS = 120;
 export const PTY_DEFAULT_ROWS = 30;
+
+export const SdkImageMediaType = {
+  Jpeg: 'image/jpeg',
+  Png: 'image/png',
+  Gif: 'image/gif',
+  Webp: 'image/webp',
+} as const;
+export type SdkImageMediaType = (typeof SdkImageMediaType)[keyof typeof SdkImageMediaType];
+
+export const SDK_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+export const SDK_IMAGE_MAX_PER_MESSAGE = 10;
+
+export interface SdkImage {
+  mediaType: SdkImageMediaType;
+  base64: string;
+}
 
 // Control bytes the Claude CLI's line editor responds to (standard readline conventions).
 export const TtyKeySequence = {

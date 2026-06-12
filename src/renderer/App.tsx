@@ -28,11 +28,11 @@ export function App(): React.ReactElement {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showNewMenu, setShowNewMenu] = useState(false);
 
-  const handleNewProject = async (mode: SessionMode, provider: AgentProvider) => {
+  const handleNewProject = async (mode: SessionMode, provider: AgentProvider, unbounded = false) => {
     setShowNewMenu(false);
     const dir = await window.api.selectDirectory();
     if (!dir) return;
-    const session = await window.api.sessions.create(dir, mode, provider);
+    const session = await window.api.sessions.create(dir, mode, provider, unbounded);
     addSession(session);
     selectSession(session.id);
   };
@@ -74,8 +74,12 @@ export function App(): React.ReactElement {
       updateSession(id, { title, summary });
     });
 
-    const unsubSdkActivity = window.api.sdk.onActivity(({ id, activity, detail, subagentCount }) => {
-      updateSession(id, { activity, activityDetail: detail, subagentCount });
+    const unsubSdkActivity = window.api.sdk.onActivity(({ id, activity, detail, subagentCount, lastActiveAt }) => {
+      const updates: Partial<SessionInfo> = { activity, activityDetail: detail, subagentCount };
+      // Only present for TTY activity transitions; omit when absent so the
+      // existing (transcript-seeded) value isn't clobbered with undefined.
+      if (lastActiveAt !== undefined) updates.lastActiveAt = lastActiveAt;
+      updateSession(id, updates);
     });
 
     return () => {
@@ -110,6 +114,12 @@ export function App(): React.ReactElement {
                   </button>
                   <button onClick={() => handleNewProject(SessionMode.Terminal, AgentProvider.Claude)}>
                     <span className="mode-icon">&#9654;</span> Claude Terminal
+                  </button>
+                  <button
+                    onClick={() => handleNewProject(SessionMode.Terminal, AgentProvider.Claude, true)}
+                    title="Auto-approve all tools (git stays blocked)"
+                  >
+                    <span className="mode-icon">&#9889;</span> Claude Terminal (unbounded)
                   </button>
                   <button onClick={() => handleNewProject(SessionMode.Terminal, AgentProvider.Codex)}>
                     <span className="mode-icon">&#9654;</span> Codex Terminal

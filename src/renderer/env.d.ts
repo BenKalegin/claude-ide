@@ -29,6 +29,8 @@ interface SessionInfo {
   activity?: string;
   activityDetail?: string;
   subagentCount?: number;
+  lastActiveAt?: number;
+  unbounded?: boolean;
 }
 
 interface ChildProcess {
@@ -49,7 +51,7 @@ interface SdkMessage {
 interface Window {
   api: {
     sessions: {
-      create: (projectPath: string, mode?: SessionMode, provider?: AgentProvider) => Promise<SessionInfo>;
+      create: (projectPath: string, mode?: SessionMode, provider?: AgentProvider, unbounded?: boolean) => Promise<SessionInfo>;
       resume: (id: string) => Promise<SessionInfo | null>;
       kill: (id: string) => Promise<boolean>;
       remove: (id: string) => Promise<boolean>;
@@ -60,20 +62,21 @@ interface Window {
       killProcess: (pid: number) => Promise<boolean>;
       write: (id: string, data: string) => void;
       resize: (id: string, cols: number, rows: number) => void;
+      setActive: (id: string | null) => void;
       setModel: (id: string, model: string) => Promise<boolean>;
-      onData: (callback: (event: { id: string; data: string }) => void) => () => void;
+      onData: (callback: (event: { id: string; data: string; reset?: boolean }) => void) => () => void;
       onStatusChange: (callback: (event: { id: string; status: string }) => void) => () => void;
       onProcesses: (callback: (event: { id: string; processes: ChildProcess[] }) => void) => () => void;
     };
     sdk: {
-      sendMessage: (id: string, prompt: string) => Promise<void>;
+      sendMessage: (id: string, prompt: string, images?: { mediaType: string; base64: string }[]) => Promise<void>;
       cancelQuery: (id: string) => Promise<void>;
       interruptQuery: (id: string) => Promise<boolean>;
       getMessages: (id: string) => Promise<SdkMessage[]>;
       onMessage: (callback: (event: { id: string; message: SdkMessage }) => void) => () => void;
       onCost: (callback: (event: { id: string; totalCost: number }) => void) => () => void;
       onTitle: (callback: (event: { id: string; title: string; summary: string }) => void) => () => void;
-      onActivity: (callback: (event: { id: string; activity: string; detail?: string; subagentCount?: number }) => void) => () => void;
+      onActivity: (callback: (event: { id: string; activity: string; detail?: string; subagentCount?: number; lastActiveAt?: number }) => void) => () => void;
     };
     selectDirectory: () => Promise<string | null>;
     getLogPath: () => Promise<string>;

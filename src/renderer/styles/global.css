@@ -614,6 +614,52 @@ html, body, #root {
   color: var(--color-text);
 }
 
+.session-header-meta {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  cursor: default;
+  outline: none;
+}
+
+.session-header-meta:hover,
+.session-header-meta:focus-visible {
+  color: var(--color-text);
+}
+
+.session-header-meta-clock {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.session-header-meta-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  font-size: 11px;
+  color: var(--color-text);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.session-header-meta:hover .session-header-meta-popover,
+.session-header-meta:focus-visible .session-header-meta-popover {
+  display: flex;
+}
+
 .content-area {
   flex: 1;
   display: flex;
@@ -965,6 +1011,14 @@ html, body, #root {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
+}
+
+.tree-unbounded {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--color-yellow, #e0b020);
+  flex-shrink: 0;
+  margin-left: 4px;
 }
 
 .tree-mode {
@@ -1319,6 +1373,54 @@ html, body, #root {
 
 .chat-input-box:focus-within {
   border-color: var(--color-text-muted);
+}
+
+.chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.chat-attachment {
+  position: relative;
+  display: inline-flex;
+  width: 56px;
+  height: 56px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+
+.chat-attachment-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.chat-attachment-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.chat-attachment-remove:hover {
+  background: rgba(0, 0, 0, 0.85);
 }
 
 .chat-input {

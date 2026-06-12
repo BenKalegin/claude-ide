@@ -128,12 +128,17 @@ function handleEditingShortcut(sessionId: string, event: KeyboardEvent): boolean
 let globalUnsub: (() => void) | null = null;
 function ensureGlobalListener(): void {
   if (globalUnsub) return;
-  globalUnsub = window.api.sessions.onData(({ id, data }) => {
+  globalUnsub = window.api.sessions.onData(({ id, data, reset }) => {
     const cached = terminalCache.get(id);
     if (cached) {
+      // `reset` marks a scrollback snapshot from main (sent on focus) — clear
+      // the terminal first so refocusing doesn't append a duplicate transcript.
+      if (reset) cached.terminal.reset();
       cached.terminal.write(data);
+    } else if (reset) {
+      // Snapshot for a not-yet-created terminal: it becomes the buffer baseline.
+      pendingData.set(id, [data]);
     } else {
-      // Buffer until terminal is created
       const buf = pendingData.get(id) || [];
       buf.push(data);
       pendingData.set(id, buf);
@@ -210,7 +215,11 @@ export function TerminalView({ sessionId }: Props): React.ReactElement {
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || !sessionId) return;
+    if (!container || !sessionId) {
+      // No terminal visible — tell main to stop streaming any session to us.
+      window.api.sessions.setActive(null);
+      return;
+    }
 
     // Remove all children (previous terminal elements)
     while (container.firstChild) {
@@ -219,6 +228,10 @@ export function TerminalView({ sessionId }: Props): React.ReactElement {
 
     const cached = getOrCreateTerminal(sessionId);
     container.appendChild(cached.element);
+
+    // Focus this session in main: it stops streaming the previous one and
+    // sends a reset snapshot of this session's buffered scrollback.
+    window.api.sessions.setActive(sessionId);
 
     // Fit after layout settles
     requestAnimationFrame(() => cached.fitAddon.fit());
@@ -235,6 +248,9 @@ export function TerminalView({ sessionId }: Props): React.ReactElement {
     return () => {
       clearTimeout(timer);
       resizeObserver.disconnect();
+      // Stop streaming when this view goes away (e.g. switching to an SDK
+      // session). On a terminal→terminal switch the next effect re-focuses.
+      window.api.sessions.setActive(null);
       // Don't remove element — just leave it; next effect will swap it
     };
   }, [sessionId]);

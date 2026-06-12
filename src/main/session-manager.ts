@@ -1,6 +1,7 @@
 import { spawn as ptySpawn, IPty } from 'node-pty';
 import { BrowserWindow } from 'electron';
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -24,6 +25,15 @@ import { getDefaultModelForProvider, getTerminalProvider } from './agent-termina
 const ACTIVITY_POLL_MS = 750;
 const PROVIDER_SESSION_ID_DETECT_MS = 6000;
 const PROVIDER_SESSION_ID_POLL_MS = 500;
+const PROCESS_POLL_MS = 3000;
+const PROCESS_POLL_TIMEOUT_MS = 3000;
+
+const execAsync = promisify(exec);
+
+// Per-session scrollback retained in the main process (like a tmux window
+// buffer). Only the focused session streams to the renderer; others accumulate
+// here cheaply, off the GUI thread, and replay via a snapshot when focused.
+const OUTPUT_BUFFER_MAX_CHARS = 256 * 1024;
 
 const log = createLogger('session');
 
@@ -42,6 +52,13 @@ export interface SessionInfo {
   activity?: SessionActivity;
   activityDetail?: string;
   subagentCount?: number;
+  // When true the session was launched in "unbounded" mode (auto-approve all
+  // tools, git still denied). Persisted so resume re-applies the same flags.
+  unbounded?: boolean;
+  // Epoch ms of this session's most recent transcript activity. Derived at
+  // list() time from the transcript file mtime; used by the sidebar's
+  // sticky-recency sort to order projects the user hasn't explicitly clicked.
+  lastActiveAt?: number;
 }
 
 interface PersistedState {
@@ -56,6 +73,7 @@ interface PersistedState {
     title?: string;
     summary?: string;
     model?: string;
+    unbounded?: boolean;
   }>;
 }
 
@@ -63,6 +81,9 @@ const TITLE_MAX_CHARS = 40;
 const SUMMARY_MAX_CHARS = 200;
 const SUMMARIZE_MODEL = 'haiku';
 const TITLE_GENERATION_DELAY = 10000;
+// Don't re-title a session more than once per this interval, even if it goes
+// idle repeatedly — each refresh is a haiku call.
+const TITLE_REFRESH_MIN_INTERVAL_MS = 90_000;
 
 const STATE_DIR = path.join(os.homedir(), '.claude-ide');
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
@@ -78,9 +99,45 @@ export class SessionManager {
   private processTimer: ReturnType<typeof setInterval> | null = null;
   private activityStates: Map<string, ReturnType<typeof createTtyState>> = new Map();
   private activityTimer: ReturnType<typeof setInterval> | null = null;
+  private outputBuffers: Map<string, string> = new Map();
+  // Epoch ms of the last title generation per session, for refresh throttling.
+  private lastTitleGenAt: Map<string, number> = new Map();
+  private focusedSessionId: string | null = null;
 
   setWindow(win: BrowserWindow): void {
     this.window = win;
+  }
+
+  /** Append PTY output to the session's bounded scrollback buffer. */
+  private bufferOutput(id: string, data: string): void {
+    const next = (this.outputBuffers.get(id) ?? '') + data;
+    this.outputBuffers.set(
+      id,
+      next.length > OUTPUT_BUFFER_MAX_CHARS ? next.slice(next.length - OUTPUT_BUFFER_MAX_CHARS) : next
+    );
+  }
+
+  /**
+   * Handle one chunk of PTY output: always buffer it and feed activity
+   * detection, but only stream it to the renderer when this session is the
+   * focused (visible) one. This is what keeps the GUI thread free when many
+   * background sessions are producing output.
+   */
+  private handlePtyData(id: string, data: string): void {
+    this.bufferOutput(id, data);
+    if (id === this.focusedSessionId) this.send(IpcChannel.SessionData, { id, data });
+    this.ingestPtyData(id, data);
+  }
+
+  /**
+   * Mark which terminal session the renderer is currently showing. Sends a
+   * one-shot snapshot of that session's buffer (with reset=true) so the
+   * terminal repaints its scrollback, then resumes live streaming for it.
+   */
+  setFocusedSession(id: string | null): void {
+    this.focusedSessionId = id;
+    if (id === null) return;
+    this.send(IpcChannel.SessionData, { id, data: this.outputBuffers.get(id) ?? '', reset: true });
   }
 
   /** Send IPC to renderer, silently skipping if the window/frame is destroyed. */
@@ -92,7 +149,8 @@ export class SessionManager {
   createSession(
     projectPath: string,
     mode: SessionMode = SessionMode.Terminal,
-    provider: AgentProvider = DEFAULT_AGENT_PROVIDER
+    provider: AgentProvider = DEFAULT_AGENT_PROVIDER,
+    unbounded = false
   ): SessionInfo {
     const id = crypto.randomUUID();
     const projectName = path.basename(projectPath);
@@ -119,10 +177,14 @@ export class SessionManager {
     const executablePath = terminalProvider.resolveExecutable();
     log.info(`Using ${provider} at: ${executablePath}`);
 
+    // Claude lets us pin the transcript id via --session-id, so bind it to our
+    // own session id up front — deterministic, no dir-watching race. Codex has
+    // no such flag, so it still falls back to post-spawn detection.
+    const pinnedSessionId = provider === AgentProvider.Claude ? id : undefined;
     const historyBaseline = this.snapshotProviderHistory(provider, projectPath);
     let pty: IPty;
     try {
-      pty = ptySpawn(executablePath, terminalProvider.buildStartArgs(model), {
+      pty = ptySpawn(executablePath, terminalProvider.buildStartArgs(model, unbounded, pinnedSessionId), {
         name: PTY_TERM,
         cols: PTY_DEFAULT_COLS,
         rows: PTY_DEFAULT_ROWS,
@@ -139,6 +201,8 @@ export class SessionManager {
         status: SessionStatus.Error,
         mode: SessionMode.Terminal,
         model,
+        unbounded,
+        providerSessionId: pinnedSessionId,
       };
       this.sessions.set(id, session);
       this.persistState();
@@ -154,6 +218,8 @@ export class SessionManager {
       pid: pty.pid,
       mode: SessionMode.Terminal,
       model,
+      unbounded,
+      providerSessionId: pinnedSessionId,
     };
 
     log.info(`Session ${id} spawned, pid: ${pty.pid}`);
@@ -162,11 +228,9 @@ export class SessionManager {
     this.ptys.set(id, pty);
 
     this.activityStates.set(id, createTtyState());
+    this.outputBuffers.delete(id);
 
-    pty.onData((data) => {
-      this.send(IpcChannel.SessionData, { id, data });
-      this.ingestPtyData(id, data);
-    });
+    pty.onData((data) => this.handlePtyData(id, data));
 
     pty.onExit(({ exitCode }) => {
       log.info(`Session ${id} exited, code: ${exitCode}`);
@@ -183,7 +247,9 @@ export class SessionManager {
 
     this.persistState();
     this.scheduleTitleGeneration(id);
-    this.detectProviderSessionId(id, historyBaseline).catch((e) =>
+    // For Claude, pinnedSessionId makes this a cheap confirmation; for Codex it
+    // detects the real transcript. Either way it guards against a wrong binding.
+    this.detectProviderSessionId(id, historyBaseline, pinnedSessionId).catch((e) =>
       log.warn(`providerSessionId detect failed for ${id}: ${e}`)
     );
     return session;
@@ -218,11 +284,9 @@ export class SessionManager {
     session.pid = pty.pid;
     this.ptys.set(id, pty);
     this.activityStates.set(id, createTtyState());
+    this.outputBuffers.delete(id);
 
-    pty.onData((data) => {
-      this.send(IpcChannel.SessionData, { id, data });
-      this.ingestPtyData(id, data);
-    });
+    pty.onData((data) => this.handlePtyData(id, data));
 
     pty.onExit(({ exitCode }) => {
       const s = this.sessions.get(id);
@@ -270,6 +334,8 @@ export class SessionManager {
   removeSession(id: string): void {
     this.killSession(id);
     this.sessions.delete(id);
+    this.outputBuffers.delete(id);
+    if (this.focusedSessionId === id) this.focusedSessionId = null;
     this.persistState();
   }
 
@@ -292,16 +358,25 @@ export class SessionManager {
   }
 
   getAll(): SessionInfo[] {
-    return Array.from(this.sessions.values());
+    return Array.from(this.sessions.values()).map((s) => ({
+      ...s,
+      lastActiveAt: this.sessionLastActiveAt(s),
+    }));
   }
 
-  getChildProcesses(id: string): Array<{ pid: number; command: string }> {
+  // Async on purpose: a synchronous spawn here blocks the main process event
+  // loop — the IPC broker for every keystroke — and with many sessions the
+  // stalls compound into visible input lag and beachballs.
+  async getChildProcesses(id: string): Promise<Array<{ pid: number; command: string }>> {
     const session = this.sessions.get(id);
     if (!session?.pid) return [];
 
     try {
-      const output = execSync(`pgrep -P ${session.pid} -l`, { encoding: 'utf-8', timeout: 3000 });
-      return output
+      const { stdout } = await execAsync(`pgrep -P ${session.pid} -l`, {
+        encoding: 'utf-8',
+        timeout: PROCESS_POLL_TIMEOUT_MS,
+      });
+      return stdout
         .trim()
         .split('\n')
         .filter(Boolean)
@@ -339,6 +414,7 @@ export class SessionManager {
           title: s.title,
           summary: s.summary,
           model: s.model,
+          unbounded: s.unbounded,
         }))
       };
       fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -401,8 +477,8 @@ export class SessionManager {
     }, TITLE_GENERATION_DELAY);
   }
 
-  private async updateTtyTitle(session: SessionInfo): Promise<void> {
-    if (session.title) return;
+  private async updateTtyTitle(session: SessionInfo, refresh = false): Promise<void> {
+    if (session.title && !refresh) return;
     try {
       const terminalProvider = getTerminalProvider(session.provider);
       const projectsDir = terminalProvider.getHistoryDir?.(session.projectPath);
@@ -416,19 +492,27 @@ export class SessionManager {
         return;
       }
 
-      const files = fs.readdirSync(sessionDir)
-        .filter((f) => f.endsWith('.jsonl'))
-        .map((f) => ({ name: f, mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime);
-
-      if (files.length === 0) {
-        log.debug(`TTY title: no JSONL files for ${session.projectName}`);
-        return;
+      // Prefer the session's own transcript so multi-session projects don't
+      // cross-title from a sibling's newer file; fall back to newest by mtime.
+      const ownFile = session.providerSessionId
+        ? path.join(sessionDir, `${session.providerSessionId}.jsonl`)
+        : null;
+      let sessionFile: string;
+      if (ownFile && fs.existsSync(ownFile)) {
+        sessionFile = ownFile;
+      } else {
+        const files = fs.readdirSync(sessionDir)
+          .filter((f) => f.endsWith('.jsonl'))
+          .map((f) => ({ name: f, mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime);
+        if (files.length === 0) {
+          log.debug(`TTY title: no JSONL files for ${session.projectName}`);
+          return;
+        }
+        sessionFile = path.join(sessionDir, files[0].name);
       }
-
-      const sessionFile = path.join(sessionDir, files[0].name);
       const lines = fs.readFileSync(sessionFile, 'utf-8').trim().split('\n');
-      log.debug(`TTY title: reading ${files[0].name} (${lines.length} lines)`);
+      log.debug(`TTY title: reading ${path.basename(sessionFile)} (${lines.length} lines)`);
 
       const userMessages: string[] = [];
       // Scan all lines — user messages can be sparse among tool calls and file snapshots
@@ -480,6 +564,7 @@ export class SessionManager {
       const parsed = JSON.parse(jsonMatch[0]) as { title?: string };
       if (parsed.title) {
         session.title = parsed.title.slice(0, TITLE_MAX_CHARS);
+        this.lastTitleGenAt.set(session.id, Date.now());
         log.info(`TTY session ${session.id} title: "${session.title}"`);
         this.send(IpcChannel.SdkTitle, {
           id: session.id,
@@ -493,15 +578,19 @@ export class SessionManager {
     }
   }
 
+  // Poll child processes for the focused session only: the ProcessMonitor
+  // panel is the sole consumer and it displays just the visible session, so
+  // polling every active session was pure waste that scaled with session count.
   startProcessMonitor(): void {
     this.processTimer = setInterval(() => {
-      for (const session of this.sessions.values()) {
-        if (session.status === SessionStatus.Active && session.pid) {
-          const procs = this.getChildProcesses(session.id);
-          this.send(IpcChannel.SessionProcesses, { id: session.id, processes: procs });
-        }
-      }
-    }, 3000);
+      const id = this.focusedSessionId;
+      if (!id) return;
+      const session = this.sessions.get(id);
+      if (!session || session.status !== SessionStatus.Active || !session.pid) return;
+      void this.getChildProcesses(id).then((procs) => {
+        this.send(IpcChannel.SessionProcesses, { id, processes: procs });
+      });
+    }, PROCESS_POLL_MS);
   }
 
   stopProcessMonitor(): void {
@@ -536,15 +625,79 @@ export class SessionManager {
     return path.join(historyDir, encodedCwd);
   }
 
+  // Epoch ms of the last genuine activity recorded in a transcript. We read the
+  // file's own content rather than its mtime because `--resume` rewrites every
+  // transcript at launch (appending untimestamped `mode`/`permission-mode`
+  // lines), which would collapse mtime-based recency into resume order. The
+  // last line carrying a `timestamp` reflects real user/assistant activity.
+  private lastTimestampInTranscript(filePath: string): number {
+    try {
+      const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        let parsed: { timestamp?: string | number };
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const ts = parsed.timestamp;
+        if (typeof ts === 'number' && Number.isFinite(ts)) return ts;
+        if (typeof ts === 'string') {
+          const ms = Date.parse(ts);
+          if (!Number.isNaN(ms)) return ms;
+        }
+      }
+    } catch {
+      // unreadable transcript — treat as no activity
+    }
+    return 0;
+  }
+
+  // Most recent activity time (epoch ms) for a session, used as the sidebar's
+  // recency fallback. Prefers the session's own transcript when providerSessionId
+  // is known, else the most-active transcript in the project dir. Returns 0 when
+  // nothing is found — the same neutral value as "never opened".
+  private sessionLastActiveAt(session: SessionInfo): number {
+    const dir = this.providerSessionDir(session.provider, session.projectPath);
+    if (!dir || !fs.existsSync(dir)) return 0;
+    try {
+      if (session.providerSessionId) {
+        const own = path.join(dir, `${session.providerSessionId}.jsonl`);
+        if (fs.existsSync(own)) return this.lastTimestampInTranscript(own);
+      }
+      let newest = 0;
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith('.jsonl')) continue;
+        const ts = this.lastTimestampInTranscript(path.join(dir, f));
+        if (ts > newest) newest = ts;
+      }
+      return newest;
+    } catch {
+      return 0;
+    }
+  }
+
   private snapshotProviderHistory(provider: AgentProvider, projectPath: string): Set<string> {
     const dir = this.providerSessionDir(provider, projectPath);
     if (!dir || !fs.existsSync(dir)) return new Set();
     return new Set(fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl')));
   }
 
-  private async detectProviderSessionId(sessionId: string, baseline: Set<string>): Promise<void> {
+  // Watches the project dir for the transcript this session's process creates.
+  // `expectedId` (set when we launched with --session-id) flips this from
+  // "detect" to "confirm-or-correct": if the new file matches, we're done; if
+  // claude used a different id despite --session-id, we rebind to the real one.
+  private async detectProviderSessionId(
+    sessionId: string,
+    baseline: Set<string>,
+    expectedId?: string
+  ): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (!session || session.providerSessionId) return;
+    if (!session) return;
+    // Without an expectation, an already-bound session is left alone.
+    if (!expectedId && session.providerSessionId) return;
     const sessionDir = this.providerSessionDir(session.provider, session.projectPath);
     if (!sessionDir) return;
     const claimed = new Set(
@@ -555,18 +708,20 @@ export class SessionManager {
     const start = Date.now();
     while (Date.now() - start < PROVIDER_SESSION_ID_DETECT_MS) {
       await new Promise((r) => setTimeout(r, PROVIDER_SESSION_ID_POLL_MS));
-      if (this.sessions.get(sessionId)?.providerSessionId) return;
       if (!fs.existsSync(sessionDir)) continue;
       const current = fs.readdirSync(sessionDir).filter((f) => f.endsWith('.jsonl'));
+      // The pinned transcript appearing means --session-id was honored — done.
+      if (expectedId && current.includes(`${expectedId}.jsonl`)) return;
       const candidates = current.filter((f) => !baseline.has(f) && !claimed.has(f));
       if (candidates.length === 0) continue;
       const sorted = candidates
         .map((f) => ({ f, mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
         .sort((a, b) => a.mtime - b.mtime);
       const picked = sorted[0].f.replace(/\.jsonl$/, '');
+      if (picked === session.providerSessionId) return;
       session.providerSessionId = picked;
       this.persistState();
-      log.info(`Session ${sessionId} bound to providerSessionId ${picked}`);
+      log.info(`Session ${sessionId} bound to providerSessionId ${picked}${expectedId ? ` (corrected from ${expectedId})` : ''}`);
       return;
     }
     log.warn(`Failed to detect providerSessionId for session ${sessionId} within ${PROVIDER_SESSION_ID_DETECT_MS}ms`);
@@ -604,14 +759,15 @@ export class SessionManager {
     this.persistState();
   }
 
+  // Only `ingest` runs per chunk (cheap: strips ANSI from the chunk and
+  // latches pattern flags). Evaluating `snapshot` here too meant regex passes
+  // over the 16KB tail buffer for every chunk of every session — heavy on the
+  // main thread during busy streaming. The ACTIVITY_POLL_MS timer already
+  // snapshots all sessions, so UI transitions lag at most one poll tick.
   private ingestPtyData(id: string, data: string): void {
     const state = this.activityStates.get(id);
     if (!state) return;
-    const now = Date.now();
-    ingest(state, data, now);
-    const session = this.sessions.get(id);
-    if (!session) return;
-    this.applyActivity(session, snapshot(state, now));
+    ingest(state, data, Date.now());
   }
 
   private applyActivity(session: SessionInfo, snap: TtyActivitySnapshot): void {
@@ -620,15 +776,36 @@ export class SessionManager {
       session.activityDetail !== snap.detail ||
       session.subagentCount !== snap.subagentCount;
     if (!changed) return;
+    // A produce→idle transition marks the end of a response cycle — a good,
+    // low-frequency moment to re-title so the label tracks the current topic.
+    const wasProducing =
+      session.activity === SessionActivity.Thinking || session.activity === SessionActivity.Streaming;
     session.activity = snap.activity;
     session.activityDetail = snap.detail;
     session.subagentCount = snap.subagentCount;
+    // Refresh "last active" on each state transition (cheap — fires once per
+    // response cycle, not per chunk). Seeded from the transcript at launch.
+    session.lastActiveAt = snap.lastDataAt;
     this.send(IpcChannel.SdkActivity, {
       id: session.id,
       activity: snap.activity,
       detail: snap.detail,
       subagentCount: snap.subagentCount,
+      lastActiveAt: snap.lastDataAt,
     });
+    if (wasProducing && snap.activity === SessionActivity.Idle) {
+      this.maybeRefreshTitleOnIdle(session);
+    }
+  }
+
+  // Re-title on idle, throttled so repeated short responses don't spam haiku.
+  private maybeRefreshTitleOnIdle(session: SessionInfo): void {
+    if (session.mode !== SessionMode.Terminal) return;
+    const now = Date.now();
+    const last = this.lastTitleGenAt.get(session.id) ?? 0;
+    if (now - last < TITLE_REFRESH_MIN_INTERVAL_MS) return;
+    this.lastTitleGenAt.set(session.id, now);
+    this.updateTtyTitle(session, true).catch(() => {});
   }
 
   destroy(): void {

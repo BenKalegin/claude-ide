@@ -6,12 +6,55 @@ import {
   AgentProvider,
   ClaudeModel,
   DEFAULT_CODEX_MODEL,
+  SDK_IMAGE_MAX_BYTES,
+  SDK_IMAGE_MAX_PER_MESSAGE,
+  SdkImageMediaType,
   SdkMessageType,
   SessionActivity,
   SessionStatus,
 } from '../../core/constants';
+import type { SdkImage } from '../../core/constants';
 
 const CMD_PREFIX = '/';
+const IMAGE_MIME_PREFIX = 'image/';
+const ALLOWED_IMAGE_MEDIA_TYPES = new Set<string>(Object.values(SdkImageMediaType));
+
+interface PendingAttachment {
+  id: string;
+  dataUrl: string;
+  mediaType: SdkImageMediaType;
+  base64: string;
+}
+
+function readFileAsAttachment(file: File): Promise<PendingAttachment | null> {
+  return new Promise((resolve) => {
+    if (!ALLOWED_IMAGE_MEDIA_TYPES.has(file.type)) {
+      resolve(null);
+      return;
+    }
+    if (file.size > SDK_IMAGE_MAX_BYTES) {
+      resolve(null);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      const commaIdx = dataUrl.indexOf(',');
+      if (commaIdx < 0) {
+        resolve(null);
+        return;
+      }
+      resolve({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        dataUrl,
+        mediaType: file.type as SdkImageMediaType,
+        base64: dataUrl.slice(commaIdx + 1),
+      });
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
 
 interface Props {
   sessionId: string;
@@ -142,22 +185,27 @@ function handleSlashCommand(sessionId: string, text: string): boolean {
 function ChatInput({ sessionId }: { sessionId: string }) {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const session = useSessionStore((s) => s.sessions.get(sessionId));
   const isThinking = session?.status === SessionStatus.Thinking;
 
   const handleSend = async () => {
     const prompt = input.trim();
-    if (!prompt || sending) return;
+    const hasImages = attachments.length > 0;
+    if ((!prompt && !hasImages) || sending) return;
 
     if (prompt.startsWith(CMD_PREFIX) && handleSlashCommand(sessionId, prompt)) {
       setInput('');
+      setAttachments([]);
       return;
     }
 
+    const images: SdkImage[] = attachments.map((a) => ({ mediaType: a.mediaType, base64: a.base64 }));
     setInput('');
+    setAttachments([]);
     setSending(true);
     try {
-      await window.api.sdk.sendMessage(sessionId, prompt);
+      await window.api.sdk.sendMessage(sessionId, prompt, images.length > 0 ? images : undefined);
     } finally {
       setSending(false);
     }
@@ -175,6 +223,32 @@ function ChatInput({ sessionId }: { sessionId: string }) {
     setSending(false);
   };
 
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items || items.length === 0) return;
+    const imageFiles: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === 'file' && item.type.startsWith(IMAGE_MIME_PREFIX)) {
+        const file = item.getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+    if (imageFiles.length === 0) return;
+    e.preventDefault();
+    const remaining = SDK_IMAGE_MAX_PER_MESSAGE - attachments.length;
+    const accepted = imageFiles.slice(0, Math.max(0, remaining));
+    const results = await Promise.all(accepted.map(readFileAsAttachment));
+    const added = results.filter((a): a is PendingAttachment => a !== null);
+    if (added.length > 0) {
+      setAttachments((prev) => [...prev, ...added]);
+    }
+  };
+
+  const handleRemoveAttachment = (id: string) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape' && isThinking) {
       e.preventDefault();
@@ -187,14 +261,32 @@ function ChatInput({ sessionId }: { sessionId: string }) {
     }
   };
 
+  const canSend = (input.trim().length > 0 || attachments.length > 0) && !sending;
+
   return (
     <div className="chat-input-area">
       <div className="chat-input-box">
+        {attachments.length > 0 && (
+          <div className="chat-attachments">
+            {attachments.map((a) => (
+              <span key={a.id} className="chat-attachment">
+                <img src={a.dataUrl} alt="pasted" className="chat-attachment-thumb" />
+                <button
+                  type="button"
+                  className="chat-attachment-remove"
+                  title="Remove"
+                  onClick={() => handleRemoveAttachment(a.id)}
+                >×</button>
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
           className="chat-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder="Reply..."
           rows={1}
           disabled={sending}
@@ -213,7 +305,7 @@ function ChatInput({ sessionId }: { sessionId: string }) {
               <button
                 className="chat-btn-submit"
                 onClick={handleSend}
-                disabled={!input.trim() || sending}
+                disabled={!canSend}
                 title="Send"
               >
                 <svg width="16" height="16" viewBox="0 0 16 16"><path d="M3 13V3l11 5-11 5z" fill="currentColor"/></svg>

@@ -1,6 +1,6 @@
-import React, { useMemo, useState, useRef, useEffect } from 'react';
+import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { useSessionStore } from '../stores/session-store';
-import { AgentProvider, SessionMode, SessionStatus, SessionActivity, SdkMessageType } from '../../core/constants';
+import { AgentProvider, SessionMode, SessionActivity, SdkMessageType } from '../../core/constants';
 
 const SESSION_LABEL_PREVIEW_CHARS = 40;
 
@@ -9,6 +9,113 @@ interface ProjectGroup {
   displayName: string;
   sessions: SessionInfo[];
 }
+
+// Pure presentation helpers, hoisted to module scope so they don't capture
+// component state — keeps them stable for the memoized SessionRow below.
+function getSessionLabel(s: SessionInfo): string {
+  if (s.title) return s.title;
+  // Fallback: first user message
+  const msgs = useSessionStore.getState().sdkMessages.get(s.id);
+  if (msgs && msgs.length > 0) {
+    const firstUser = msgs.find((m) => m.type === SdkMessageType.User);
+    if (firstUser) {
+      const text = firstUser.content.slice(0, SESSION_LABEL_PREVIEW_CHARS);
+      return text.length < firstUser.content.length ? text + '...' : text;
+    }
+  }
+  return s.mode === SessionMode.Terminal ? `${s.projectName} (tty)` : 'New session';
+}
+
+function getProviderLabel(provider: AgentProvider | undefined): string {
+  return provider === AgentProvider.Codex ? 'Codex' : 'Claude';
+}
+
+function formatActivity(activity: string, detail?: string): string {
+  switch (activity) {
+    case SessionActivity.WaitingForUser: return 'awaiting input';
+    case SessionActivity.Thinking: return detail ? `${detail}…` : 'thinking…';
+    case SessionActivity.UsingTool: return detail ? `${detail}` : 'tool…';
+    case SessionActivity.Streaming: return 'writing…';
+    default: return '';
+  }
+}
+
+interface SessionRowProps {
+  session: SessionInfo;
+  label: string;
+  isActive: boolean;
+  isConfirmingClose: boolean;
+  onSelect: (id: string) => void;
+  onRequestClose: (id: string) => void;
+  onConfirmClose: (id: string) => void;
+  onCancelClose: () => void;
+}
+
+// Memoized so a single session's 750ms activity update re-renders only that
+// row, not the whole tree. Relies on the store preserving object identity for
+// unchanged sessions and on all callbacks/flags being referentially stable.
+const SessionRow = React.memo(function SessionRow({
+  session: s,
+  label,
+  isActive,
+  isConfirmingClose,
+  onSelect,
+  onRequestClose,
+  onConfirmClose,
+  onCancelClose,
+}: SessionRowProps): React.ReactElement {
+  return (
+    <div
+      className={`tree-item ${isActive ? 'tree-active' : ''}`}
+      onClick={() => onSelect(s.id)}
+      title={s.summary || ''}
+      data-status={s.status}
+      data-activity={s.activity || SessionActivity.Idle}
+      data-waiting={s.activity === SessionActivity.WaitingForUser ? 'true' : undefined}
+      data-running={
+        s.activity && s.activity !== SessionActivity.Idle && s.activity !== SessionActivity.WaitingForUser
+          ? 'true'
+          : undefined
+      }
+    >
+      {s.activity === SessionActivity.WaitingForUser ? (
+        <span className="tree-glyph-wait" aria-label="waiting for input">!</span>
+      ) : (
+        <span className="tree-dot" />
+      )}
+      <span className="tree-name">{label}</span>
+      {s.unbounded && (
+        <span className="tree-unbounded" title="Unbounded: auto-approves all tools (git blocked)">&#9889;</span>
+      )}
+      {s.subagentCount !== undefined && s.subagentCount > 0 && (
+        <span className="tree-subagent" title={`${s.subagentCount} subagent${s.subagentCount === 1 ? '' : 's'}`}>
+          &times;{s.subagentCount}
+        </span>
+      )}
+      {s.activity && s.activity !== SessionActivity.Idle && (
+        <span className="tree-activity">{formatActivity(s.activity, s.activityDetail)}</span>
+      )}
+      {s.mode === SessionMode.Terminal && (
+        <span className="tree-mode tree-mode-terminal">{getProviderLabel(s.provider)} TTY</span>
+      )}
+      {s.mode === SessionMode.Sdk && (
+        <span className="tree-mode tree-mode-sdk">{getProviderLabel(s.provider)} SDK</span>
+      )}
+      {isConfirmingClose ? (
+        <span className="tree-confirm-close">
+          <button className="tree-confirm-yes" title="Confirm close" onClick={(e) => { e.stopPropagation(); onConfirmClose(s.id); }}>&#10003;</button>
+          <button className="tree-confirm-no" title="Cancel" onClick={(e) => { e.stopPropagation(); onCancelClose(); }}>&#10005;</button>
+        </span>
+      ) : (
+        <button
+          className="tree-close-btn"
+          title="Close session"
+          onClick={(e) => { e.stopPropagation(); onRequestClose(s.id); }}
+        >&times;</button>
+      )}
+    </div>
+  );
+});
 
 export function ProjectTree(): React.ReactElement {
   const sessions = useSessionStore((s) => s.sessions);
@@ -51,8 +158,18 @@ export function ProjectTree(): React.ReactElement {
     const byPath = new Map(groups.map((g) => [g.projectPath, g]));
     const currentPaths = groups.map((g) => g.projectPath);
     const prev = orderRef.current;
-    const byRecencyDesc = (a: string, b: string) =>
-      (projectActivity[b] ?? 0) - (projectActivity[a] ?? 0);
+    // Effective recency = the later of an explicit select/create (projectActivity)
+    // and the project's most recent session transcript activity (lastActiveAt).
+    // The latter ensures projects you've worked in but never clicked the row for
+    // still sort by real recency instead of collapsing to 0.
+    const recencyOf = (p: string): number => {
+      const group = byPath.get(p);
+      const sessionRecency = group
+        ? group.sessions.reduce((max, s) => Math.max(max, s.lastActiveAt ?? 0), 0)
+        : 0;
+      return Math.max(projectActivity[p] ?? 0, sessionRecency);
+    };
+    const byRecencyDesc = (a: string, b: string) => recencyOf(b) - recencyOf(a);
 
     let order: string[];
     if (prev.length === 0) {
@@ -66,6 +183,13 @@ export function ProjectTree(): React.ReactElement {
     orderRef.current = order;
     return order.map((p) => byPath.get(p)).filter((g): g is ProjectGroup => g !== undefined);
   }, [groups, projectActivity]);
+
+  // The session ids in the exact order they're rendered (project order, then
+  // sessions within each project). Kept in a ref so close-on-delete can pick the
+  // visible neighbor without making its callback depend on the changing list —
+  // that would defeat the memoized SessionRow.
+  const flatOrderRef = useRef<string[]>([]);
+  flatOrderRef.current = orderedGroups.flatMap((g) => g.sessions.map((s) => s.id));
 
   useEffect(() => {
     if (editingPath && inputRef.current) {
@@ -104,24 +228,28 @@ export function ProjectTree(): React.ReactElement {
 
   const [confirmCloseId, setConfirmCloseId] = useState<string | null>(null);
 
-  const handleCloseSession = (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    setConfirmCloseId(id);
-  };
-
-  const handleConfirmClose = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirmCloseId) return;
-    await window.api.sessions.kill(confirmCloseId);
-    await window.api.sessions.remove(confirmCloseId);
-    removeSession(confirmCloseId);
+  // Stable callbacks: passed to the memoized SessionRow, so they must keep the
+  // same reference across renders or they'd defeat the memo. setConfirmCloseId
+  // and removeSession are already stable references.
+  const handleRequestClose = useCallback((id: string) => setConfirmCloseId(id), []);
+  const handleCancelClose = useCallback(() => setConfirmCloseId(null), []);
+  const handleConfirmClose = useCallback(async (id: string) => {
+    // If we're closing the session that's currently open, fall through to its
+    // visible neighbor (the next row, or the previous one if it was last) so the
+    // list highlight and the right pane stay in sync — like closing a tab.
+    const wasActive = useSessionStore.getState().activeSessionId === id;
+    let neighbor: string | null = null;
+    if (wasActive) {
+      const flat = flatOrderRef.current;
+      const idx = flat.indexOf(id);
+      neighbor = flat[idx + 1] ?? flat[idx - 1] ?? null;
+    }
+    await window.api.sessions.kill(id);
+    await window.api.sessions.remove(id);
+    removeSession(id);
+    if (wasActive) selectSession(neighbor);
     setConfirmCloseId(null);
-  };
-
-  const handleCancelClose = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setConfirmCloseId(null);
-  };
+  }, [removeSession, selectSession]);
 
   useEffect(() => {
     if (!addMenuPath) return;
@@ -129,33 +257,6 @@ export function ProjectTree(): React.ReactElement {
     document.addEventListener('click', close);
     return () => document.removeEventListener('click', close);
   }, [addMenuPath]);
-
-  const getSessionLabel = (s: SessionInfo): string => {
-    if (s.title) return s.title;
-    // Fallback: first user message
-    const msgs = useSessionStore.getState().sdkMessages.get(s.id);
-    if (msgs && msgs.length > 0) {
-      const firstUser = msgs.find((m) => m.type === SdkMessageType.User);
-      if (firstUser) {
-        const text = firstUser.content.slice(0, SESSION_LABEL_PREVIEW_CHARS);
-        return text.length < firstUser.content.length ? text + '...' : text;
-      }
-    }
-    return s.mode === SessionMode.Terminal ? `${s.projectName} (tty)` : 'New session';
-  };
-
-  const getProviderLabel = (provider: AgentProvider | undefined): string =>
-    provider === AgentProvider.Codex ? 'Codex' : 'Claude';
-
-  const formatActivity = (activity: string, detail?: string): string => {
-    switch (activity) {
-      case SessionActivity.WaitingForUser: return 'awaiting input';
-      case SessionActivity.Thinking: return detail ? `${detail}…` : 'thinking…';
-      case SessionActivity.UsingTool: return detail ? `${detail}` : 'tool…';
-      case SessionActivity.Streaming: return 'writing…';
-      default: return '';
-    }
-  };
 
   if (orderedGroups.length === 0) {
     return <div className="tree-empty">No active sessions</div>;
@@ -207,53 +308,17 @@ export function ProjectTree(): React.ReactElement {
             </div>
           )}
           {group.sessions.map((s) => (
-            <div
+            <SessionRow
               key={s.id}
-              className={`tree-item ${activeSessionId === s.id ? 'tree-active' : ''}`}
-              onClick={() => selectSession(s.id)}
-              title={s.summary || ''}
-              data-status={s.status}
-              data-activity={s.activity || SessionActivity.Idle}
-              data-waiting={s.activity === SessionActivity.WaitingForUser ? 'true' : undefined}
-              data-running={
-                s.activity && s.activity !== SessionActivity.Idle && s.activity !== SessionActivity.WaitingForUser
-                  ? 'true'
-                  : undefined
-              }
-            >
-              {s.activity === SessionActivity.WaitingForUser ? (
-                <span className="tree-glyph-wait" aria-label="waiting for input">!</span>
-              ) : (
-                <span className="tree-dot" />
-              )}
-              <span className="tree-name">{getSessionLabel(s)}</span>
-              {s.subagentCount !== undefined && s.subagentCount > 0 && (
-                <span className="tree-subagent" title={`${s.subagentCount} subagent${s.subagentCount === 1 ? '' : 's'}`}>
-                  &times;{s.subagentCount}
-                </span>
-              )}
-              {s.activity && s.activity !== SessionActivity.Idle && (
-                <span className="tree-activity">{formatActivity(s.activity, s.activityDetail)}</span>
-              )}
-              {s.mode === SessionMode.Terminal && (
-                <span className="tree-mode tree-mode-terminal">{getProviderLabel(s.provider)} TTY</span>
-              )}
-              {s.mode === SessionMode.Sdk && (
-                <span className="tree-mode tree-mode-sdk">{getProviderLabel(s.provider)} SDK</span>
-              )}
-              {confirmCloseId === s.id ? (
-                <span className="tree-confirm-close">
-                  <button className="tree-confirm-yes" title="Confirm close" onClick={handleConfirmClose}>&#10003;</button>
-                  <button className="tree-confirm-no" title="Cancel" onClick={handleCancelClose}>&#10005;</button>
-                </span>
-              ) : (
-                <button
-                  className="tree-close-btn"
-                  title="Close session"
-                  onClick={(e) => handleCloseSession(e, s.id)}
-                >&times;</button>
-              )}
-            </div>
+              session={s}
+              label={getSessionLabel(s)}
+              isActive={activeSessionId === s.id}
+              isConfirmingClose={confirmCloseId === s.id}
+              onSelect={selectSession}
+              onRequestClose={handleRequestClose}
+              onConfirmClose={handleConfirmClose}
+              onCancelClose={handleCancelClose}
+            />
           ))}
         </div>
       ))}

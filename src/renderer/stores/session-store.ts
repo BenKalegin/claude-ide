@@ -124,11 +124,16 @@ export const useSessionStore = create<SessionState>((set) => ({
 
   updateSession: (id, updates) =>
     set((state) => {
+      const existing = state.sessions.get(id);
+      if (!existing) return {};
+      // No-op guard: if no field actually changes, keep the same Map reference so
+      // subscribers (e.g. ProjectTree) don't re-render on redundant activity emits.
+      const changed = (Object.keys(updates) as Array<keyof SessionInfo>).some(
+        (key) => existing[key] !== updates[key]
+      );
+      if (!changed) return {};
       const sessions = new Map(state.sessions);
-      const existing = sessions.get(id);
-      if (existing) {
-        sessions.set(id, { ...existing, ...updates });
-      }
+      sessions.set(id, { ...existing, ...updates });
       return { sessions };
     }),
 

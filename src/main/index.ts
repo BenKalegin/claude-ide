@@ -12,6 +12,7 @@ import {
   SessionMode,
   SessionStatus,
 } from '../core/constants';
+import type { SdkImage } from '../core/constants';
 
 const mainLog = createLogger('main');
 const ipcLog = createLogger('ipc');
@@ -85,15 +86,16 @@ app.whenReady().then(() => {
       _e,
       projectPath: string,
       mode: SessionMode = SessionMode.Terminal,
-      provider: AgentProvider = DEFAULT_AGENT_PROVIDER
+      provider: AgentProvider = DEFAULT_AGENT_PROVIDER,
+      unbounded = false
     ) => {
-      ipcLog.info('create-session', { projectPath, mode, provider });
+      ipcLog.info('create-session', { projectPath, mode, provider, unbounded });
       if (mode === SessionMode.Sdk) {
         const s = await sdkSessionManager.createSession(projectPath, provider);
         ipcLog.info('SDK session created:', s.id);
         return s;
       }
-      const s = sessionManager.createSession(projectPath, mode, provider);
+      const s = sessionManager.createSession(projectPath, mode, provider, unbounded);
       ipcLog.info('Terminal session created:', s.id, 'pid:', s.pid);
       return s;
     }
@@ -159,6 +161,7 @@ app.whenReady().then(() => {
       model: s.model,
       title: s.title,
       summary: s.summary,
+      lastActiveAt: s.messages.length > 0 ? s.messages[s.messages.length - 1].timestamp : 0,
     }));
     return [...terminal, ...sdk];
   });
@@ -181,9 +184,13 @@ app.whenReady().then(() => {
     sessionManager.resizeSession(id, cols, rows);
   });
 
-  ipcMain.handle(IpcChannel.SdkSendMessage, async (_e, id: string, prompt: string) => {
-    ipcLog.info('sdk-send-message', id, prompt.substring(0, 80));
-    await sdkSessionManager.sendMessage(id, prompt);
+  ipcMain.on(IpcChannel.SetActiveSession, (_e, id: string | null) => {
+    sessionManager.setFocusedSession(id);
+  });
+
+  ipcMain.handle(IpcChannel.SdkSendMessage, async (_e, id: string, prompt: string, images?: SdkImage[]) => {
+    ipcLog.info('sdk-send-message', id, prompt.substring(0, 80), `images=${images?.length ?? 0}`);
+    await sdkSessionManager.sendMessage(id, prompt, images);
   });
 
   ipcMain.handle(IpcChannel.SdkCancelQuery, async (_e, id: string) => {

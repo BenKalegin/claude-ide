@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { AgentProvider, DEFAULT_AGENT_PROVIDER, IpcChannel, SessionMode } from '../core/constants';
+import type { SdkImage } from '../core/constants';
 
 export interface UsageSummary {
   inputTokens: number;
@@ -43,9 +44,10 @@ const api = {
     create: (
       projectPath: string,
       mode: SessionMode = SessionMode.Terminal,
-      provider: AgentProvider = DEFAULT_AGENT_PROVIDER
+      provider: AgentProvider = DEFAULT_AGENT_PROVIDER,
+      unbounded = false
     ): Promise<SessionInfo> =>
-      ipcRenderer.invoke(IpcChannel.CreateSession, projectPath, mode, provider),
+      ipcRenderer.invoke(IpcChannel.CreateSession, projectPath, mode, provider, unbounded),
 
     resume: (id: string): Promise<SessionInfo | null> =>
       ipcRenderer.invoke(IpcChannel.ResumeSession, id),
@@ -77,11 +79,14 @@ const api = {
     resize: (id: string, cols: number, rows: number): void =>
       ipcRenderer.send(IpcChannel.ResizeSession, { id, cols, rows }),
 
+    setActive: (id: string | null): void =>
+      ipcRenderer.send(IpcChannel.SetActiveSession, id),
+
     setModel: (id: string, model: string): Promise<boolean> =>
       ipcRenderer.invoke(IpcChannel.SetSessionModel, id, model),
 
-    onData: (callback: (event: { id: string; data: string }) => void) => {
-      const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; data: string }) =>
+    onData: (callback: (event: { id: string; data: string; reset?: boolean }) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; data: string; reset?: boolean }) =>
         callback(payload);
       ipcRenderer.on(IpcChannel.SessionData, handler);
       return () => ipcRenderer.removeListener(IpcChannel.SessionData, handler);
@@ -103,8 +108,8 @@ const api = {
   },
 
   sdk: {
-    sendMessage: (id: string, prompt: string): Promise<void> =>
-      ipcRenderer.invoke(IpcChannel.SdkSendMessage, id, prompt),
+    sendMessage: (id: string, prompt: string, images?: SdkImage[]): Promise<void> =>
+      ipcRenderer.invoke(IpcChannel.SdkSendMessage, id, prompt, images),
 
     cancelQuery: (id: string): Promise<void> =>
       ipcRenderer.invoke(IpcChannel.SdkCancelQuery, id),
@@ -136,8 +141,8 @@ const api = {
       return () => ipcRenderer.removeListener(IpcChannel.SdkTitle, handler);
     },
 
-    onActivity: (callback: (event: { id: string; activity: string; detail?: string; subagentCount?: number }) => void) => {
-      const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; activity: string; detail?: string; subagentCount?: number }) =>
+    onActivity: (callback: (event: { id: string; activity: string; detail?: string; subagentCount?: number; lastActiveAt?: number }) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; activity: string; detail?: string; subagentCount?: number; lastActiveAt?: number }) =>
         callback(payload);
       ipcRenderer.on(IpcChannel.SdkActivity, handler);
       return () => ipcRenderer.removeListener(IpcChannel.SdkActivity, handler);

@@ -18,6 +18,9 @@ export interface TtyActivitySnapshot {
   activity: SessionActivity;
   detail?: string;
   subagentCount: number;
+  // Epoch ms of the most recent PTY output — used as the session's "last
+  // active" time for the staleness indicator in the header.
+  lastDataAt: number;
 }
 
 interface TtyActivityState {
@@ -57,7 +60,7 @@ export function snapshot(state: TtyActivityState, now: number): TtyActivitySnaps
   const idleMs = now - state.lastDataAt;
 
   if (state.waitingDetectedAt && now - state.waitingDetectedAt < WAITING_LATCH_MS) {
-    return { activity: SessionActivity.WaitingForUser, subagentCount };
+    return { activity: SessionActivity.WaitingForUser, subagentCount, lastDataAt: state.lastDataAt };
   }
   if (state.waitingDetectedAt) state.waitingDetectedAt = null;
 
@@ -67,14 +70,14 @@ export function snapshot(state: TtyActivityState, now: number): TtyActivitySnaps
   const recentlyActive = idleMs < 1500;
 
   if (spinner && recentlyActive) {
-    return { activity: SessionActivity.Thinking, detail: spinner[1].toLowerCase(), subagentCount };
+    return { activity: SessionActivity.Thinking, detail: spinner[1].toLowerCase(), subagentCount, lastDataAt: state.lastDataAt };
   }
 
   if (recentlyActive && escInterrupt) {
-    return { activity: SessionActivity.Streaming, subagentCount };
+    return { activity: SessionActivity.Streaming, subagentCount, lastDataAt: state.lastDataAt };
   }
 
-  return { activity: SessionActivity.Idle, subagentCount };
+  return { activity: SessionActivity.Idle, subagentCount, lastDataAt: state.lastDataAt };
 }
 
 function chunkContainsWaiting(compact: string): boolean {
