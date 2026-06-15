@@ -17,7 +17,15 @@ import {
   SessionActivity,
   SessionMode,
   SessionStatus,
+  TtyKeySequence,
 } from '../core/constants';
+import { latestModelAliasInLines } from './transcript-model';
+import {
+  ModelPickerKey,
+  isPickerReady,
+  parseModelPicker,
+  planPickerNavigation,
+} from './model-picker';
 import { createTtyState, ingest, snapshot, clearWaiting } from './tty-activity';
 import type { TtyActivitySnapshot } from './tty-activity';
 import { getDefaultModelForProvider, getTerminalProvider } from './agent-terminal-provider';
@@ -88,6 +96,14 @@ const TITLE_REFRESH_MIN_INTERVAL_MS = 90_000;
 const STATE_DIR = path.join(os.homedir(), '.claude-ide');
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
 
+// Picker-driving timings for live model switches. The picker opens fast but we
+// poll for its footer rather than guess; arrows are paced so the TUI's input
+// handler registers each as a discrete keypress (a burst is dropped).
+const PICKER_OPEN_TIMEOUT_MS = 4000;
+const PICKER_POLL_MS = 120;
+const PICKER_ARROW_DELAY_MS = 120;
+const PICKER_SETTLE_MS = 200;
+
 function normalizeAgentProvider(provider?: AgentProvider): AgentProvider {
   return provider === AgentProvider.Codex ? AgentProvider.Codex : AgentProvider.Claude;
 }
@@ -102,6 +118,11 @@ export class SessionManager {
   private outputBuffers: Map<string, string> = new Map();
   // Epoch ms of the last title generation per session, for refresh throttling.
   private lastTitleGenAt: Map<string, number> = new Map();
+  // Byte offset of consumed transcript content per session, for the model
+  // watcher. Seeded at spawn to the current file size so only lines appended
+  // during this run (e.g. /model confirmations) are scanned — historical
+  // content is irrelevant because spawn always passes --model explicitly.
+  private transcriptModelOffsets: Map<string, number> = new Map();
   private focusedSessionId: string | null = null;
 
   setWindow(win: BrowserWindow): void {
@@ -229,6 +250,7 @@ export class SessionManager {
 
     this.activityStates.set(id, createTtyState());
     this.outputBuffers.delete(id);
+    this.seedTranscriptModelOffset(session);
 
     pty.onData((data) => this.handlePtyData(id, data));
 
@@ -285,6 +307,7 @@ export class SessionManager {
     this.ptys.set(id, pty);
     this.activityStates.set(id, createTtyState());
     this.outputBuffers.delete(id);
+    this.seedTranscriptModelOffset(session);
 
     pty.onData((data) => this.handlePtyData(id, data));
 
@@ -335,6 +358,7 @@ export class SessionManager {
     this.killSession(id);
     this.sessions.delete(id);
     this.outputBuffers.delete(id);
+    this.transcriptModelOffsets.delete(id);
     if (this.focusedSessionId === id) this.focusedSessionId = null;
     this.persistState();
   }
@@ -345,6 +369,76 @@ export class SessionManager {
     session.model = model;
     this.persistState();
     log.info(`Session ${id} model set to: ${model}`);
+    void this.injectModelSelection(session, model).catch((e) =>
+      log.warn(`model injection failed for ${id}: ${e}`)
+    );
+  }
+
+  // Forward a dropdown model change into the live TTY by driving the `/model`
+  // picker to a session-only switch — the persisted value (above) already
+  // covers the next resume. We drive the picker rather than typing
+  // `/model <name>` because the argument form, like the digit/Enter paths,
+  // saves the choice as the GLOBAL default; only the picker's `s` key scopes
+  // the switch to this session. Skipped while the CLI is producing output: a
+  // command sent mid-response queues with unclear timing. On any failure the
+  // transcript watcher still reconciles the dropdown with the real model.
+  private async injectModelSelection(session: SessionInfo, model: string): Promise<void> {
+    if (session.mode !== SessionMode.Terminal || session.provider !== AgentProvider.Claude) return;
+    const pty = this.ptys.get(session.id);
+    if (session.status !== SessionStatus.Active || !pty) return;
+    if (session.activity === SessionActivity.Thinking || session.activity === SessionActivity.Streaming) {
+      log.info(`Session ${session.id} busy; ${ModelPickerKey.Open} ${model} not injected (applies on next resume)`);
+      return;
+    }
+
+    // Anchor parsing to output produced after this point so a picker the user
+    // opened earlier in the session can't be mistaken for the current one.
+    const baseline = (this.outputBuffers.get(session.id) ?? '').length;
+    // KillLine clears any half-typed prompt so the command starts at column 0;
+    // a draft would otherwise absorb the text and submit it as a message.
+    this.writeToSession(session.id, `${TtyKeySequence.KillLine}${ModelPickerKey.Open}\r`);
+
+    const rendered = await this.awaitPickerRender(session.id, baseline);
+    if (!rendered) {
+      log.warn(`Session ${session.id} model picker did not render; ${model} not switched live`);
+      return;
+    }
+    const state = parseModelPicker(rendered);
+    const nav = planPickerNavigation(state, model);
+    if (!nav.reachable) {
+      log.warn(`Session ${session.id} cannot select "${model}" in picker (${nav.reason}); closing picker`);
+      pty.write(ModelPickerKey.Escape);
+      return;
+    }
+
+    const key = nav.delta >= 0 ? ModelPickerKey.Down : ModelPickerKey.Up;
+    for (let i = 0; i < Math.abs(nav.delta); i++) {
+      pty.write(key);
+      await this.delay(PICKER_ARROW_DELAY_MS);
+    }
+    await this.delay(PICKER_SETTLE_MS);
+    pty.write(ModelPickerKey.SessionOnly);
+    log.info(`Session ${session.id} model switched live to "${model}" (${Math.abs(nav.delta)} step${Math.abs(nav.delta) === 1 ? '' : 's'})`);
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  // Poll the session's output buffer until the picker has fully drawn, then
+  // return the post-baseline slice for parsing. Reads from the same scrollback
+  // the renderer streams from, so it sees exactly what the picker rendered.
+  private async awaitPickerRender(id: string, baseline: number): Promise<string | null> {
+    const start = Date.now();
+    while (Date.now() - start < PICKER_OPEN_TIMEOUT_MS) {
+      await this.delay(PICKER_POLL_MS);
+      const buf = this.outputBuffers.get(id) ?? '';
+      // If the bounded buffer rotated past the baseline, fall back to the whole
+      // tail — picker output is tiny and won't have been evicted yet.
+      const since = buf.length >= baseline ? buf.slice(baseline) : buf;
+      if (isPickerReady(since)) return since;
+    }
+    return null;
   }
 
   writeToSession(id: string, data: string): void {
@@ -607,6 +701,7 @@ export class SessionManager {
         const session = this.sessions.get(id);
         if (!session || session.status !== SessionStatus.Active) continue;
         this.applyActivity(session, snapshot(state, now));
+        this.pollTranscriptModel(session);
       }
     }, ACTIVITY_POLL_MS);
   }
@@ -623,6 +718,78 @@ export class SessionManager {
     if (!historyDir) return null;
     const encodedCwd = projectPath.replace(/[^a-zA-Z0-9]/g, '-');
     return path.join(historyDir, encodedCwd);
+  }
+
+  /** Path to the session's own transcript file, or null when not yet bound. */
+  private transcriptPath(session: SessionInfo): string | null {
+    if (!session.providerSessionId) return null;
+    const dir = this.providerSessionDir(session.provider, session.projectPath);
+    return dir ? path.join(dir, `${session.providerSessionId}.jsonl`) : null;
+  }
+
+  // Mark the transcript's current content as consumed by the model watcher.
+  // Called at spawn: --model on the command line makes the persisted model
+  // authoritative at that point, so only lines appended afterwards matter.
+  private seedTranscriptModelOffset(session: SessionInfo): void {
+    let size = 0;
+    const file = this.transcriptPath(session);
+    if (file) {
+      try {
+        size = fs.statSync(file).size;
+      } catch {
+        // not created yet — everything claude writes will be new
+      }
+    }
+    this.transcriptModelOffsets.set(session.id, size);
+  }
+
+  // Detect model changes made inside the TTY (e.g. via /model) by tailing the
+  // session transcript: assistant lines carry `message.model`, and the /model
+  // confirmation lands as command stdout. Reads only bytes appended since the
+  // last poll — one stat per tick when nothing changed — and unlike scraping
+  // PTY output it never re-sees old content on TUI repaints.
+  private pollTranscriptModel(session: SessionInfo): void {
+    if (session.mode !== SessionMode.Terminal || session.provider !== AgentProvider.Claude) return;
+    const file = this.transcriptPath(session);
+    if (!file) return;
+    let size: number;
+    try {
+      size = fs.statSync(file).size;
+    } catch {
+      return;
+    }
+    const offset = this.transcriptModelOffsets.get(session.id) ?? size;
+    if (size < offset) {
+      // Rewritten shorter (e.g. by --resume) — treat current content as consumed.
+      this.transcriptModelOffsets.set(session.id, size);
+      return;
+    }
+    if (size === offset) return;
+    let buf: Buffer;
+    try {
+      const fd = fs.openSync(file, 'r');
+      try {
+        buf = Buffer.alloc(size - offset);
+        const read = fs.readSync(fd, buf, 0, buf.length, offset);
+        buf = buf.subarray(0, read);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return;
+    }
+    // Consume only complete lines; a trailing partial line is re-read next
+    // poll. Splitting on the newline byte (never part of a multibyte UTF-8
+    // sequence) keeps the byte offset exact.
+    const lastNewline = buf.lastIndexOf('\n');
+    if (lastNewline === -1) return;
+    this.transcriptModelOffsets.set(session.id, offset + lastNewline + 1);
+    const alias = latestModelAliasInLines(buf.toString('utf-8', 0, lastNewline).split('\n'));
+    if (!alias || alias === session.model) return;
+    session.model = alias;
+    this.persistState();
+    log.info(`Session ${session.id} model detected from transcript: ${alias}`);
+    this.send(IpcChannel.SessionModel, { id: session.id, model: alias });
   }
 
   // Epoch ms of the last genuine activity recorded in a transcript. We read the

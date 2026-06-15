@@ -67,6 +67,7 @@ interface Window {
       onData: (callback: (event: { id: string; data: string; reset?: boolean }) => void) => () => void;
       onStatusChange: (callback: (event: { id: string; status: string }) => void) => () => void;
       onProcesses: (callback: (event: { id: string; processes: ChildProcess[] }) => void) => () => void;
+      onModelChanged: (callback: (event: { id: string; model: string }) => void) => () => void;
     };
     sdk: {
       sendMessage: (id: string, prompt: string, images?: { mediaType: string; base64: string }[]) => Promise<void>;

@@ -74,6 +74,13 @@ export function App(): React.ReactElement {
       updateSession(id, { title, summary });
     });
 
+    // Model changes made inside the TTY (e.g. /model) are detected from the
+    // session transcript in the main process and pushed here so the header
+    // dropdown and details popover track the session's true model.
+    const unsubModel = window.api.sessions.onModelChanged(({ id, model }) => {
+      updateSession(id, { model });
+    });
+
     const unsubSdkActivity = window.api.sdk.onActivity(({ id, activity, detail, subagentCount, lastActiveAt }) => {
       const updates: Partial<SessionInfo> = { activity, activityDetail: detail, subagentCount };
       // Only present for TTY activity transitions; omit when absent so the
@@ -88,6 +95,7 @@ export function App(): React.ReactElement {
       unsubSdkMessage();
       unsubSdkCost();
       unsubSdkTitle();
+      unsubModel();
       unsubSdkActivity();
     };
   }, []);

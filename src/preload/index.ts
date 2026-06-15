@@ -104,6 +104,13 @@ const api = {
         callback(payload);
       ipcRenderer.on(IpcChannel.SessionProcesses, handler);
       return () => ipcRenderer.removeListener(IpcChannel.SessionProcesses, handler);
+    },
+
+    onModelChanged: (callback: (event: { id: string; model: string }) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; model: string }) =>
+        callback(payload);
+      ipcRenderer.on(IpcChannel.SessionModel, handler);
+      return () => ipcRenderer.removeListener(IpcChannel.SessionModel, handler);
     }
   },
 

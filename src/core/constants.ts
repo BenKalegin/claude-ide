@@ -49,6 +49,7 @@ export const IpcChannel = {
   UsageUpdate: 'usage-update',
   GetUsageHistory: 'get-usage-history',
   SetSessionModel: 'set-session-model',
+  SessionModel: 'session-model',
 } as const;
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
 
