@@ -35,6 +35,14 @@ const PROVIDER_SESSION_ID_DETECT_MS = 6000;
 const PROVIDER_SESSION_ID_POLL_MS = 500;
 const PROCESS_POLL_MS = 3000;
 const PROCESS_POLL_TIMEOUT_MS = 3000;
+// A `/clear` (or auto-compaction) mid-session makes claude rotate to a brand-new
+// transcript with no parentUuid link, leaving the bound one frozen. We only go
+// looking for that continuation once the bound transcript has been quiet this
+// long — while it's still growing the conversation is live on its own file.
+const FORK_OWN_STABLE_MS = 4000;
+// A continuation transcript begins right when the bound one goes quiet. This
+// slack absorbs clock skew / line-ordering so we still recognise it as adjacent.
+const FORK_ADJACENCY_TOLERANCE_MS = 5000;
 
 const execAsync = promisify(exec);
 
@@ -123,6 +131,10 @@ export class SessionManager {
   // during this run (e.g. /model confirmations) are scanned — historical
   // content is irrelevant because spawn always passes --model explicitly.
   private transcriptModelOffsets: Map<string, number> = new Map();
+  // Tracks the bound transcript's size per session so the fork watcher can tell
+  // "still being written" from "gone quiet"; `scanned` debounces the dir scan to
+  // once per quiet window so the activity tick stays cheap (one stat) at rest.
+  private forkWatch: Map<string, { ownSize: number; stableSince: number; scanned: boolean }> = new Map();
   private focusedSessionId: string | null = null;
 
   setWindow(win: BrowserWindow): void {
@@ -359,6 +371,7 @@ export class SessionManager {
     this.sessions.delete(id);
     this.outputBuffers.delete(id);
     this.transcriptModelOffsets.delete(id);
+    this.forkWatch.delete(id);
     if (this.focusedSessionId === id) this.focusedSessionId = null;
     this.persistState();
   }
@@ -702,6 +715,7 @@ export class SessionManager {
         if (!session || session.status !== SessionStatus.Active) continue;
         this.applyActivity(session, snapshot(state, now));
         this.pollTranscriptModel(session);
+        this.pollTranscriptFork(session, now);
       }
     }, ACTIVITY_POLL_MS);
   }
@@ -820,6 +834,106 @@ export class SessionManager {
       // unreadable transcript — treat as no activity
     }
     return 0;
+  }
+
+  // Epoch ms of the first genuine activity in a transcript. A `/clear` fork
+  // begins exactly when its parent goes quiet, so this anchors the adjacency
+  // test that tells a continuation apart from a parallel session's transcript.
+  // Reads only the head of the file — the first timestamped line is all we need.
+  private firstTimestampInTranscript(filePath: string): number {
+    try {
+      const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line) continue;
+        let parsed: { timestamp?: string | number };
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const ts = parsed.timestamp;
+        if (typeof ts === 'number' && Number.isFinite(ts)) return ts;
+        if (typeof ts === 'string') {
+          const ms = Date.parse(ts);
+          if (!Number.isNaN(ms)) return ms;
+        }
+      }
+    } catch {
+      // unreadable transcript — no usable start time
+    }
+    return 0;
+  }
+
+  // Finds the transcript a `/clear`/compaction fork moved the conversation into,
+  // or null when the session is still on its bound file. A candidate qualifies
+  // only if it is (a) not the bound file, (b) not claimed by another session,
+  // (c) more recently active than the bound file, and (d) *began* at/after the
+  // bound file went quiet — (d) is what distinguishes a continuation from a
+  // parallel chat in the same project that merely happens to be more recent.
+  private findContinuationTranscript(session: SessionInfo): string | null {
+    if (session.mode !== SessionMode.Terminal || session.provider !== AgentProvider.Claude) return null;
+    if (!session.providerSessionId) return null;
+    const dir = this.providerSessionDir(session.provider, session.projectPath);
+    if (!dir || !fs.existsSync(dir)) return null;
+    const ownFile = `${session.providerSessionId}.jsonl`;
+    const ownPath = path.join(dir, ownFile);
+    const ownLast = fs.existsSync(ownPath) ? this.lastTimestampInTranscript(ownPath) : 0;
+    const claimed = new Set(
+      Array.from(this.sessions.values())
+        .filter((s) => s.id !== session.id && s.providerSessionId)
+        .map((s) => `${s.providerSessionId}.jsonl`)
+    );
+    let bestId: string | null = null;
+    let bestLast = ownLast;
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        // `agent-*.jsonl` are subagent sidechains, never a top-level session.
+        if (!f.endsWith('.jsonl') || f === ownFile || f.startsWith('agent-') || claimed.has(f)) continue;
+        const p = path.join(dir, f);
+        const last = this.lastTimestampInTranscript(p);
+        if (last <= bestLast) continue;
+        const first = this.firstTimestampInTranscript(p);
+        if (first < ownLast - FORK_ADJACENCY_TOLERANCE_MS) continue;
+        bestId = f.replace(/\.jsonl$/, '');
+        bestLast = last;
+      }
+    } catch {
+      return null;
+    }
+    return bestId;
+  }
+
+  // Cheap per-tick guard over the bound transcript: while it keeps growing the
+  // conversation is live on its own file and we do nothing. Once it has been
+  // quiet for FORK_OWN_STABLE_MS we scan the project dir once for a continuation
+  // and rebind to it, so the next --resume targets the real latest transcript.
+  private pollTranscriptFork(session: SessionInfo, now: number): void {
+    if (session.mode !== SessionMode.Terminal || session.provider !== AgentProvider.Claude) return;
+    if (!session.providerSessionId) return;
+    const own = this.transcriptPath(session);
+    if (!own) return;
+    let size: number;
+    try {
+      size = fs.statSync(own).size;
+    } catch {
+      return;
+    }
+    const state = this.forkWatch.get(session.id);
+    if (!state || state.ownSize !== size) {
+      this.forkWatch.set(session.id, { ownSize: size, stableSince: now, scanned: false });
+      return;
+    }
+    if (state.scanned || now - state.stableSince < FORK_OWN_STABLE_MS) return;
+    state.scanned = true;
+    const picked = this.findContinuationTranscript(session);
+    if (!picked || picked === session.providerSessionId) return;
+    log.info(`Session ${session.id} followed transcript fork: ${session.providerSessionId} → ${picked}`);
+    session.providerSessionId = picked;
+    this.seedTranscriptModelOffset(session);
+    this.forkWatch.delete(session.id);
+    this.persistState();
+    this.scheduleTitleGeneration(session.id);
   }
 
   // Most recent activity time (epoch ms) for a session, used as the sidebar's
