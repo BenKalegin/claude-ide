@@ -49,7 +49,11 @@ const execAsync = promisify(exec);
 // Per-session scrollback retained in the main process (like a tmux window
 // buffer). Only the focused session streams to the renderer; others accumulate
 // here cheaply, off the GUI thread, and replay via a snapshot when focused.
-const OUTPUT_BUFFER_MAX_CHARS = 256 * 1024;
+// Sized to survive a renderer refresh (e.g. after laptop sleep) without the
+// meaningful output of a long-running session scrolling out of the window:
+// at 256KB a multi-day eval session's history was lost on refresh, leaving the
+// terminal looking cleared. 2MB × ~30 background sessions is a few tens of MB.
+const OUTPUT_BUFFER_MAX_CHARS = 2 * 1024 * 1024;
 
 const log = createLogger('session');
 
@@ -301,7 +305,16 @@ export class SessionManager {
 
     const terminalProvider = getTerminalProvider(session.provider);
     const executablePath = terminalProvider.resolveExecutable();
-    const args = terminalProvider.buildResumeArgs(session);
+    // Guard against resuming a transcript that no longer exists. A Claude
+    // session pinned via --session-id only gets its <id>.jsonl once a turn is
+    // persisted; if the app quit before that (or the file was removed),
+    // `--resume <id>` spawns a blank "from scratch" session — and usually one
+    // that isn't re-pinned, so it stays broken on every later restart. When the
+    // pinned transcript is missing, relaunch as a fresh session still pinned to
+    // our id so it persists correctly going forward, rather than --resume a ghost.
+    const args = this.shouldResumeFresh(session)
+      ? terminalProvider.buildStartArgs(session.model, session.unbounded, session.providerSessionId)
+      : terminalProvider.buildResumeArgs(session);
     log.info(`Resuming session ${id} with args: ${args.join(' ')}`);
     const historyBaseline = session.providerSessionId
       ? new Set<string>()
@@ -739,6 +752,18 @@ export class SessionManager {
     if (!session.providerSessionId) return null;
     const dir = this.providerSessionDir(session.provider, session.projectPath);
     return dir ? path.join(dir, `${session.providerSessionId}.jsonl`) : null;
+  }
+
+  // True when a "resume" should instead start a fresh (re-pinned) session
+  // because the bound transcript is gone. Only applies to Claude sessions that
+  // are pinned to a provider session id: the path is deterministic, so a
+  // missing file means there is genuinely nothing to resume. Codex (no pin) and
+  // unbound sessions fall through to their normal resume path untouched.
+  private shouldResumeFresh(session: SessionInfo): boolean {
+    if (session.provider !== AgentProvider.Claude || !session.providerSessionId) return false;
+    const own = this.transcriptPath(session);
+    if (!own) return false;
+    return !fs.existsSync(own);
   }
 
   // Mark the transcript's current content as consumed by the model watcher.

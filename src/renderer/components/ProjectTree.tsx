@@ -219,9 +219,14 @@ export function ProjectTree(): React.ReactElement {
     else if (e.key === 'Escape') setEditingPath(null);
   };
 
-  const handleNewSession = async (projectPath: string, mode: SessionMode, provider: AgentProvider) => {
+  const handleNewSession = async (
+    projectPath: string,
+    mode: SessionMode,
+    provider: AgentProvider,
+    unbounded = false,
+  ) => {
     setAddMenuPath(null);
-    const session = await window.api.sessions.create(projectPath, mode, provider);
+    const session = await window.api.sessions.create(projectPath, mode, provider, unbounded);
     addSession(session);
     selectSession(session.id);
   };
@@ -301,6 +306,12 @@ export function ProjectTree(): React.ReactElement {
               </button>
               <button onClick={() => handleNewSession(group.projectPath, SessionMode.Terminal, AgentProvider.Claude)}>
                 <span className="mode-icon">&#9654;</span> Claude Terminal
+              </button>
+              <button
+                onClick={() => handleNewSession(group.projectPath, SessionMode.Terminal, AgentProvider.Claude, true)}
+                title="Auto-approve all tools (git stays blocked)"
+              >
+                <span className="mode-icon">&#9889;</span> Claude Terminal (unbounded)
               </button>
               <button onClick={() => handleNewSession(group.projectPath, SessionMode.Terminal, AgentProvider.Codex)}>
                 <span className="mode-icon">&#9654;</span> Codex Terminal
