@@ -1771,3 +1771,163 @@ html, body, #root {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* SDK permission / question popup */
+.perm-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--color-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.perm-dialog {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  width: 520px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+
+.perm-header {
+  padding: 12px 16px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+}
+
+.perm-body {
+  padding: 16px;
+}
+
+.perm-tool {
+  margin-bottom: 12px;
+}
+
+.perm-tool-name {
+  display: inline-block;
+  font-weight: 600;
+  color: var(--color-yellow);
+  margin-bottom: 6px;
+}
+
+.perm-tool-summary {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+  color: var(--color-text);
+}
+
+.perm-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.perm-tab {
+  padding: 4px 10px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.perm-tab-active {
+  color: var(--color-text);
+  border-color: var(--color-active);
+}
+
+.perm-tab-done::after {
+  content: " ✓";
+  color: var(--color-green);
+}
+
+.perm-question {
+  margin-bottom: 10px;
+  color: var(--color-text);
+}
+
+.perm-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.perm-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.perm-radio input {
+  margin-top: 2px;
+}
+
+.perm-opt-label {
+  display: block;
+}
+
+.perm-opt-desc {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.perm-feedback {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text);
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.perm-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.perm-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.perm-btn-primary {
+  background: var(--color-active);
+  border-color: var(--color-active);
+}
+
+.perm-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { AgentProvider, DEFAULT_AGENT_PROVIDER, IpcChannel, SessionMode } from '../core/constants';
-import type { SdkImage } from '../core/constants';
+import type { SdkImage, SdkPermissionRequestPayload, SdkPermissionResponsePayload } from '../core/constants';
 
 export interface UsageSummary {
   inputTokens: number;
@@ -154,6 +154,16 @@ const api = {
       ipcRenderer.on(IpcChannel.SdkActivity, handler);
       return () => ipcRenderer.removeListener(IpcChannel.SdkActivity, handler);
     },
+
+    onPermissionRequest: (callback: (payload: SdkPermissionRequestPayload) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, payload: SdkPermissionRequestPayload) =>
+        callback(payload);
+      ipcRenderer.on(IpcChannel.SdkPermissionRequest, handler);
+      return () => ipcRenderer.removeListener(IpcChannel.SdkPermissionRequest, handler);
+    },
+
+    respondPermission: (response: SdkPermissionResponsePayload): Promise<void> =>
+      ipcRenderer.invoke(IpcChannel.SdkPermissionResponse, response),
   },
 
   selectDirectory: (): Promise<string | null> =>

@@ -12,7 +12,7 @@ import {
   SessionMode,
   SessionStatus,
 } from '../core/constants';
-import type { SdkImage } from '../core/constants';
+import type { SdkImage, SdkPermissionResponsePayload } from '../core/constants';
 
 const mainLog = createLogger('main');
 const ipcLog = createLogger('ipc');
@@ -205,6 +205,10 @@ app.whenReady().then(() => {
 
   ipcMain.handle(IpcChannel.SdkGetMessages, async (_e, id: string) => {
     return sdkSessionManager.getMessages(id);
+  });
+
+  ipcMain.handle(IpcChannel.SdkPermissionResponse, async (_e, response: SdkPermissionResponsePayload) => {
+    sdkSessionManager.resolvePermission(response);
   });
 
   ipcMain.handle(IpcChannel.SelectDirectory, async () => {

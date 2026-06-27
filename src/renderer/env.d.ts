@@ -48,6 +48,35 @@ interface SdkMessage {
   sessionId?: string;
 }
 
+interface SdkQuestionOption {
+  label: string;
+  description?: string;
+}
+
+interface SdkQuestion {
+  question: string;
+  header: string;
+  options: SdkQuestionOption[];
+  multiSelect?: boolean;
+}
+
+interface SdkPermissionRequestPayload {
+  requestId: string;
+  sessionId: string;
+  kind: 'permission' | 'question';
+  toolName: string;
+  summary?: string;
+  questions?: SdkQuestion[];
+}
+
+interface SdkPermissionResponsePayload {
+  requestId: string;
+  kind: 'permission' | 'question';
+  decision?: 'allow_once' | 'allow_session' | 'deny';
+  message?: string;
+  answers?: Record<string, string>;
+}
+
 interface Window {
   api: {
     sessions: {
@@ -78,6 +107,8 @@ interface Window {
       onCost: (callback: (event: { id: string; totalCost: number }) => void) => () => void;
       onTitle: (callback: (event: { id: string; title: string; summary: string }) => void) => () => void;
       onActivity: (callback: (event: { id: string; activity: string; detail?: string; subagentCount?: number; lastActiveAt?: number }) => void) => () => void;
+      onPermissionRequest: (callback: (payload: SdkPermissionRequestPayload) => void) => () => void;
+      respondPermission: (response: SdkPermissionResponsePayload) => Promise<void>;
     };
     selectDirectory: () => Promise<string | null>;
     getLogPath: () => Promise<string>;

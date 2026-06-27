@@ -5,6 +5,7 @@ import { SdkView } from './components/SdkView';
 import { ProcessMonitor } from './components/ProcessMonitor';
 import { Resizer } from './components/Resizer';
 import { SettingsDialog } from './components/SettingsDialog';
+import { SdkPermissionDialog } from './components/SdkPermissionDialog';
 import { UsageBar } from './components/UsageBar';
 import { SessionHeader } from './components/SessionHeader';
 import { useSessionStore } from './stores/session-store';
@@ -168,6 +169,7 @@ export function App(): React.ReactElement {
         </div>
       </div>
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SdkPermissionDialog />
     </div>
   );
 }

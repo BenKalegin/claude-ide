@@ -6,14 +6,39 @@ import * as os from 'os';
 import { createLogger } from './logger';
 import {
   AgentProvider,
+  ASK_USER_QUESTION_TOOL,
   DEFAULT_AGENT_PROVIDER,
   IpcChannel,
+  PERMISSION_AUTO_ALLOW_TOOLS,
+  PermissionDecision,
+  PermissionRequestKind,
   SessionActivity,
   SessionMode,
   SessionStatus,
   SdkMessageType,
 } from '../core/constants';
-import type { SdkImage } from '../core/constants';
+import type {
+  SdkImage,
+  SdkPermissionRequestPayload,
+  SdkPermissionResponsePayload,
+  SdkQuestion,
+} from '../core/constants';
+
+// The two shapes the Agent SDK's canUseTool callback may return.
+type PermissionResult =
+  | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
+  | { behavior: 'deny'; message: string };
+
+// A tool request awaiting the user's decision in the renderer popup.
+interface PendingPermission {
+  sessionId: string;
+  toolName: string;
+  kind: PermissionRequestKind;
+  input: Record<string, unknown>;
+  resolve: (result: PermissionResult) => void;
+}
+
+const TOOL_SUMMARY_MAX_CHARS = 300;
 import { getDefaultModelForProvider } from './agent-terminal-provider';
 
 const log = createLogger('sdk');
@@ -116,6 +141,11 @@ export class SdkSessionManager {
   private activeQueries: Map<string, ActiveQuery> = new Map();
   private window: BrowserWindow | null = null;
   private usageHistory: UsageEntry[] = [];
+  // Tool requests awaiting a user decision, keyed by requestId (the SDK's
+  // toolUseID). The SDK stream is paused on each entry's resolve().
+  private pendingPermissions: Map<string, PendingPermission> = new Map();
+  // Tools the user chose "Allow for session" on, per session id.
+  private sessionAllowedTools: Map<string, Set<string>> = new Map();
 
   constructor() {
     this.loadUsageHistory();
@@ -195,8 +225,13 @@ export class SdkSessionManager {
 
       const options: Record<string, unknown> = {
         cwd: session.projectPath,
-        allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep', 'Agent'],
-        permissionMode: 'acceptEdits',
+        // `default` mode routes every non-pre-approved tool to canUseTool, so
+        // we (not the SDK) decide what to auto-allow vs. prompt for. No
+        // allowedTools allow-list: an allow rule would short-circuit canUseTool
+        // and we'd never get to prompt. AskUserQuestion also arrives here.
+        permissionMode: 'default',
+        canUseTool: (toolName: string, input: Record<string, unknown>, o: { signal?: AbortSignal; toolUseID?: string }) =>
+          this.requestPermission(id, toolName, input, o),
         includePartialMessages: true,
         model: session.model,
         abortController: active.controller,
@@ -400,6 +435,106 @@ export class SdkSessionManager {
       active.controller.abort();
       this.activeQueries.delete(id);
     }
+    // Unblock any popup still waiting on this session so the stream can unwind.
+    this.rejectPendingForSession(id, 'Cancelled.');
+  }
+
+  // Agent SDK canUseTool callback. Auto-allows read-only tools and tools the
+  // user pre-approved for this session; otherwise asks the renderer to show a
+  // popup and returns a Promise that resolves when the user decides. The SDK
+  // stream stays paused for as long as this Promise is pending.
+  private requestPermission(
+    sessionId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    opts: { signal?: AbortSignal; toolUseID?: string }
+  ): Promise<PermissionResult> {
+    const isQuestion = toolName === ASK_USER_QUESTION_TOOL;
+    if (!isQuestion) {
+      if ((PERMISSION_AUTO_ALLOW_TOOLS as readonly string[]).includes(toolName)) {
+        return Promise.resolve({ behavior: 'allow', updatedInput: input });
+      }
+      if (this.sessionAllowedTools.get(sessionId)?.has(toolName)) {
+        return Promise.resolve({ behavior: 'allow', updatedInput: input });
+      }
+    }
+
+    const requestId = opts.toolUseID || crypto.randomUUID();
+    const kind = isQuestion ? PermissionRequestKind.Question : PermissionRequestKind.Permission;
+    const payload: SdkPermissionRequestPayload = {
+      requestId,
+      sessionId,
+      kind,
+      toolName,
+      summary: isQuestion ? undefined : this.describeToolUse(toolName, input),
+      questions: isQuestion ? (input.questions as SdkQuestion[] | undefined) : undefined,
+    };
+
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.activity = SessionActivity.WaitingForUser;
+      this.emitActivity(sessionId, SessionActivity.WaitingForUser);
+    }
+
+    return new Promise<PermissionResult>((resolve) => {
+      this.pendingPermissions.set(requestId, { sessionId, toolName, kind, input, resolve });
+      this.send(IpcChannel.SdkPermissionRequest, payload);
+      // If the query is aborted while we wait, deny so the stream can unwind.
+      opts.signal?.addEventListener('abort', () => {
+        if (this.pendingPermissions.delete(requestId)) {
+          resolve({ behavior: 'deny', message: 'Cancelled.' });
+        }
+      });
+    });
+  }
+
+  // Called from the renderer (via IPC) when the user answers a popup.
+  resolvePermission(response: SdkPermissionResponsePayload): void {
+    const pending = this.pendingPermissions.get(response.requestId);
+    if (!pending) return;
+    this.pendingPermissions.delete(response.requestId);
+
+    let result: PermissionResult;
+    if (pending.kind === PermissionRequestKind.Question) {
+      // AskUserQuestion: echo the questions back unchanged and attach answers.
+      result = {
+        behavior: 'allow',
+        updatedInput: { questions: pending.input.questions, answers: response.answers ?? {} },
+      };
+    } else if (response.decision === PermissionDecision.Deny) {
+      result = { behavior: 'deny', message: response.message?.trim() || 'User denied this action.' };
+    } else {
+      if (response.decision === PermissionDecision.AllowSession) {
+        const set = this.sessionAllowedTools.get(pending.sessionId) ?? new Set<string>();
+        set.add(pending.toolName);
+        this.sessionAllowedTools.set(pending.sessionId, set);
+      }
+      result = { behavior: 'allow', updatedInput: pending.input };
+    }
+
+    const session = this.sessions.get(pending.sessionId);
+    if (session) {
+      session.activity = SessionActivity.Thinking;
+      this.emitActivity(pending.sessionId, SessionActivity.Thinking);
+    }
+    pending.resolve(result);
+  }
+
+  private rejectPendingForSession(sessionId: string, message: string): void {
+    for (const [requestId, pending] of this.pendingPermissions) {
+      if (pending.sessionId !== sessionId) continue;
+      this.pendingPermissions.delete(requestId);
+      pending.resolve({ behavior: 'deny', message });
+    }
+  }
+
+  // Short, human-readable description of a tool request for the popup header.
+  private describeToolUse(toolName: string, input: Record<string, unknown>): string {
+    if (toolName === 'Bash' && typeof input.command === 'string') return input.command;
+    if ((toolName === 'Write' || toolName === 'Edit') && typeof input.file_path === 'string') {
+      return input.file_path;
+    }
+    return JSON.stringify(input).slice(0, TOOL_SUMMARY_MAX_CHARS);
   }
 
   private transformMessage(message: Record<string, unknown>): SdkMessage | null {
@@ -526,6 +661,7 @@ export class SdkSessionManager {
 
   removeSession(id: string): void {
     this.cancelQuery(id);
+    this.sessionAllowedTools.delete(id);
     this.sessions.delete(id);
     this.deleteMessages(id);
     this.persistState();

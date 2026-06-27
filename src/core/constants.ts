@@ -50,8 +50,70 @@ export const IpcChannel = {
   GetUsageHistory: 'get-usage-history',
   SetSessionModel: 'set-session-model',
   SessionModel: 'session-model',
+  SdkPermissionRequest: 'sdk-permission-request',
+  SdkPermissionResponse: 'sdk-permission-response',
 } as const;
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
+
+// Interactive confirmation for SDK (Node.js) sessions. Unlike TTY sessions
+// (where Claude prints its own permission prompt in the console), SDK sessions
+// run headless, so the main process intercepts tool use via the Agent SDK
+// `canUseTool` callback, asks the renderer to show a popup, and blocks the
+// stream until the user responds.
+export const PermissionRequestKind = {
+  // A tool wants to run (Bash, Write, …) — render allow/deny radio options.
+  Permission: 'permission',
+  // Claude called AskUserQuestion — render the questions as tabs with options.
+  Question: 'question',
+} as const;
+export type PermissionRequestKind = (typeof PermissionRequestKind)[keyof typeof PermissionRequestKind];
+
+export const PermissionDecision = {
+  AllowOnce: 'allow_once',
+  AllowSession: 'allow_session',
+  Deny: 'deny',
+} as const;
+export type PermissionDecision = (typeof PermissionDecision)[keyof typeof PermissionDecision];
+
+// Read-only tools auto-approved without a prompt, matching the TTY claude's
+// default posture (writes / Bash / everything else still prompt).
+export const PERMISSION_AUTO_ALLOW_TOOLS = ['Read', 'Glob', 'Grep'] as const;
+
+// The built-in tool Claude calls to ask the user a multiple-choice question.
+export const ASK_USER_QUESTION_TOOL = 'AskUserQuestion';
+
+export interface SdkQuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface SdkQuestion {
+  question: string;
+  header: string;
+  options: SdkQuestionOption[];
+  multiSelect?: boolean;
+}
+
+export interface SdkPermissionRequestPayload {
+  requestId: string;
+  sessionId: string;
+  kind: PermissionRequestKind;
+  toolName: string;
+  // kind=Permission: short human-readable description of what will happen.
+  summary?: string;
+  // kind=Question: the questions to render as tabs.
+  questions?: SdkQuestion[];
+}
+
+export interface SdkPermissionResponsePayload {
+  requestId: string;
+  kind: PermissionRequestKind;
+  // kind=Permission
+  decision?: PermissionDecision;
+  message?: string; // free-text feedback supplied with a Deny
+  // kind=Question: map of question text -> chosen answer (custom text allowed)
+  answers?: Record<string, string>;
+}
 
 export const SdkMessageType = {
   Assistant: 'assistant',
