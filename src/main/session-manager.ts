@@ -107,6 +107,13 @@ const TITLE_REFRESH_MIN_INTERVAL_MS = 90_000;
 
 const STATE_DIR = path.join(os.homedir(), '.claude-ide');
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
+// Terminal scrollback is persisted here so a session's visible history
+// survives an app restart even when there's no Claude transcript to --resume
+// (e.g. a session used as a plain shell for scripts/eval drivers).
+const SCROLLBACK_DIR = path.join(STATE_DIR, 'scrollback');
+// Dirty buffers are flushed no more often than this — bounds disk I/O while
+// capping worst-case loss on a hard kill to a few seconds of output.
+const SCROLLBACK_FLUSH_MS = 3000;
 
 // Picker-driving timings for live model switches. The picker opens fast but we
 // poll for its footer rather than guess; arrows are paced so the TUI's input
@@ -128,6 +135,10 @@ export class SessionManager {
   private activityStates: Map<string, ReturnType<typeof createTtyState>> = new Map();
   private activityTimer: ReturnType<typeof setInterval> | null = null;
   private outputBuffers: Map<string, string> = new Map();
+  // Sessions whose scrollback changed since the last disk flush, and when we
+  // last flushed — together they throttle persistence to SCROLLBACK_FLUSH_MS.
+  private scrollbackDirty: Set<string> = new Set();
+  private lastScrollbackFlushAt = 0;
   // Epoch ms of the last title generation per session, for refresh throttling.
   private lastTitleGenAt: Map<string, number> = new Map();
   // Byte offset of consumed transcript content per session, for the model
@@ -152,6 +163,63 @@ export class SessionManager {
       id,
       next.length > OUTPUT_BUFFER_MAX_CHARS ? next.slice(next.length - OUTPUT_BUFFER_MAX_CHARS) : next
     );
+    this.scrollbackDirty.add(id);
+  }
+
+  private scrollbackFile(id: string): string {
+    return path.join(SCROLLBACK_DIR, `${id}.log`);
+  }
+
+  /** Flush dirty scrollback buffers to disk, throttled to SCROLLBACK_FLUSH_MS. */
+  private maybeFlushScrollback(now: number): void {
+    if (this.scrollbackDirty.size === 0) return;
+    if (now - this.lastScrollbackFlushAt < SCROLLBACK_FLUSH_MS) return;
+    this.lastScrollbackFlushAt = now;
+    this.flushScrollback();
+  }
+
+  private flushScrollback(): void {
+    if (this.scrollbackDirty.size === 0) return;
+    try {
+      if (!fs.existsSync(SCROLLBACK_DIR)) fs.mkdirSync(SCROLLBACK_DIR, { recursive: true });
+    } catch {
+      return;
+    }
+    for (const id of this.scrollbackDirty) {
+      const buf = this.outputBuffers.get(id);
+      if (buf === undefined) continue;
+      try {
+        fs.writeFileSync(this.scrollbackFile(id), buf);
+      } catch {
+        // best-effort persistence
+      }
+    }
+    this.scrollbackDirty.clear();
+  }
+
+  /** Seed a session's in-memory buffer from disk so a restart can replay it. */
+  private loadScrollback(id: string): void {
+    try {
+      const file = this.scrollbackFile(id);
+      if (!fs.existsSync(file)) return;
+      const data = fs.readFileSync(file, 'utf-8');
+      this.outputBuffers.set(
+        id,
+        data.length > OUTPUT_BUFFER_MAX_CHARS ? data.slice(data.length - OUTPUT_BUFFER_MAX_CHARS) : data
+      );
+    } catch {
+      // unreadable scrollback — start empty
+    }
+  }
+
+  private deleteScrollback(id: string): void {
+    this.scrollbackDirty.delete(id);
+    try {
+      const file = this.scrollbackFile(id);
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    } catch {
+      // best-effort
+    }
   }
 
   /**
@@ -312,7 +380,8 @@ export class SessionManager {
     // that isn't re-pinned, so it stays broken on every later restart. When the
     // pinned transcript is missing, relaunch as a fresh session still pinned to
     // our id so it persists correctly going forward, rather than --resume a ghost.
-    const args = this.shouldResumeFresh(session)
+    const resumeFresh = this.shouldResumeFresh(session);
+    const args = resumeFresh
       ? terminalProvider.buildStartArgs(session.model, session.unbounded, session.providerSessionId)
       : terminalProvider.buildResumeArgs(session);
     log.info(`Resuming session ${id} with args: ${args.join(' ')}`);
@@ -331,7 +400,10 @@ export class SessionManager {
     session.pid = pty.pid;
     this.ptys.set(id, pty);
     this.activityStates.set(id, createTtyState());
-    this.outputBuffers.delete(id);
+    // A --resume session redraws its own history into the terminal, so drop the
+    // stale buffer to avoid duplicated content. A fresh (no-transcript) session
+    // has nothing to redraw — keep the restored scrollback as its history.
+    if (!resumeFresh) this.outputBuffers.delete(id);
     this.seedTranscriptModelOffset(session);
 
     pty.onData((data) => this.handlePtyData(id, data));
@@ -383,6 +455,7 @@ export class SessionManager {
     this.killSession(id);
     this.sessions.delete(id);
     this.outputBuffers.delete(id);
+    this.deleteScrollback(id);
     this.transcriptModelOffsets.delete(id);
     this.forkWatch.delete(id);
     if (this.focusedSessionId === id) this.focusedSessionId = null;
@@ -559,6 +632,9 @@ export class SessionManager {
             mode: s.mode || SessionMode.Terminal,
             model: s.model || getDefaultModelForProvider(provider),
           });
+          // Seed the buffer from disk so the focused session replays its prior
+          // scrollback after a restart, even with no transcript to --resume.
+          this.loadScrollback(s.id);
         }
       }
       return this.getAll();
@@ -730,6 +806,7 @@ export class SessionManager {
         this.pollTranscriptModel(session);
         this.pollTranscriptFork(session, now);
       }
+      this.maybeFlushScrollback(now);
     }, ACTIVITY_POLL_MS);
   }
 
@@ -1120,6 +1197,7 @@ export class SessionManager {
     for (const [id] of this.ptys) {
       this.killSession(id);
     }
+    this.flushScrollback();
     this.persistState();
   }
 }
