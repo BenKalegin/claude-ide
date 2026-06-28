@@ -82,12 +82,17 @@ export function App(): React.ReactElement {
       updateSession(id, { model });
     });
 
-    const unsubSdkActivity = window.api.sdk.onActivity(({ id, activity, detail, subagentCount, lastActiveAt }) => {
+    const unsubSdkActivity = window.api.sdk.onActivity(({ id, activity, detail, subagentCount, lastActiveAt, tokens }) => {
       const updates: Partial<SessionInfo> = { activity, activityDetail: detail, subagentCount };
       // Only present for TTY activity transitions; omit when absent so the
       // existing (transcript-seeded) value isn't clobbered with undefined.
       if (lastActiveAt !== undefined) updates.lastActiveAt = lastActiveAt;
+      if (tokens !== undefined) updates.liveTokens = tokens;
       updateSession(id, updates);
+    });
+
+    const unsubSdkTodos = window.api.sdk.onTodos(({ id, todos }) => {
+      updateSession(id, { todos });
     });
 
     return () => {
@@ -98,6 +103,7 @@ export function App(): React.ReactElement {
       unsubSdkTitle();
       unsubModel();
       unsubSdkActivity();
+      unsubSdkTodos();
     };
   }, []);
 

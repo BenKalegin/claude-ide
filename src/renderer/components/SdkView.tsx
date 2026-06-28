@@ -10,10 +10,11 @@ import {
   SDK_IMAGE_MAX_PER_MESSAGE,
   SdkImageMediaType,
   SdkMessageType,
+  SdkTodoStatus,
   SessionActivity,
   SessionStatus,
 } from '../../core/constants';
-import type { SdkImage } from '../../core/constants';
+import type { SdkImage, SdkTodo } from '../../core/constants';
 
 const CMD_PREFIX = '/';
 const IMAGE_MIME_PREFIX = 'image/';
@@ -104,6 +105,36 @@ const ChatMessage = memo(function ChatMessage({ msg }: { msg: SdkMessage }) {
     </div>
   );
 });
+
+const TASK_ICON: Record<string, string> = {
+  [SdkTodoStatus.Completed]: '✔',
+  [SdkTodoStatus.InProgress]: '■',
+  [SdkTodoStatus.Pending]: '▢',
+};
+
+/** The current TodoWrite task list, mirroring what the TTY renders inline. */
+function TaskPanel({ todos }: { todos: SdkTodo[] }): React.ReactElement | null {
+  if (todos.length === 0) return null;
+  const done = todos.filter((t) => t.status === SdkTodoStatus.Completed).length;
+  const inProgress = todos.filter((t) => t.status === SdkTodoStatus.InProgress).length;
+  const open = todos.filter((t) => t.status === SdkTodoStatus.Pending).length;
+  return (
+    <div className="task-panel">
+      <div className="task-panel-header">
+        <strong>{todos.length}</strong> tasks (<strong>{done}</strong> done,{' '}
+        <strong>{inProgress}</strong> in progress, <strong>{open}</strong> open)
+      </div>
+      <ul className="task-list">
+        {todos.map((t, i) => (
+          <li key={i} className={`task-item task-${t.status}`}>
+            <span className="task-icon">{TASK_ICON[t.status] ?? '▢'}</span>
+            <span className="task-text">{t.content}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 /** Emit a local system message visible in the chat. */
 function emitLocal(sessionId: string, content: string): void {
@@ -322,6 +353,25 @@ export function SdkView({ sessionId }: Props): React.ReactElement {
   const messages = useSessionStore((s) => s.sdkMessages.get(sessionId)) || [];
   const session = useSessionStore((s) => s.sessions.get(sessionId));
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [thinkingElapsed, setThinkingElapsed] = useState(0);
+  const thinkingStartRef = useRef<number | null>(null);
+  const isThinking = session?.status === SessionStatus.Thinking;
+
+  // Tick a live "elapsed" counter while the session is working, so even a long
+  // silent tool call visibly progresses instead of looking frozen.
+  useEffect(() => {
+    if (!isThinking) {
+      thinkingStartRef.current = null;
+      setThinkingElapsed(0);
+      return;
+    }
+    if (thinkingStartRef.current == null) thinkingStartRef.current = Date.now();
+    const tick = () =>
+      setThinkingElapsed(Math.floor((Date.now() - (thinkingStartRef.current ?? Date.now())) / 1000));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [isThinking]);
 
   // Global Escape handler — works even when textarea isn't focused
   useEffect(() => {
@@ -355,7 +405,6 @@ export function SdkView({ sessionId }: Props): React.ReactElement {
     }
   }, [messages]);
 
-  const isThinking = session?.status === SessionStatus.Thinking;
   const providerLabel = session?.provider === AgentProvider.Codex ? 'Codex' : 'Claude';
   const visible = messages.filter((msg) =>
     msg.type !== SdkMessageType.System || !msg.content.startsWith('Session initialized:')
@@ -379,14 +428,23 @@ export function SdkView({ sessionId }: Props): React.ReactElement {
               <span className="chat-thinking-label">
                 {session?.activity === SessionActivity.UsingTool
                   ? session.activityDetail || 'Using tool'
-                  : session?.activity === SessionActivity.Streaming
-                    ? 'Writing'
-                    : 'Thinking'}
+                  : session?.activity === SessionActivity.WaitingForUser
+                    ? 'Waiting for your input'
+                    : session?.activity === SessionActivity.Streaming
+                      ? 'Writing'
+                      : 'Thinking'}
               </span>
+              {session?.activity !== SessionActivity.WaitingForUser && (
+                <span className="chat-thinking-elapsed">
+                  {session?.liveTokens ? `${fmtTokens(session.liveTokens)} tok · ` : ''}
+                  {thinkingElapsed}s
+                </span>
+              )}
             </div>
           </div>
         )}
       </div>
+      {session?.todos && session.todos.length > 0 && <TaskPanel todos={session.todos} />}
       <ChatInput sessionId={sessionId} />
     </div>
   );

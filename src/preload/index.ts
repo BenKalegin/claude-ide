@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { AgentProvider, DEFAULT_AGENT_PROVIDER, IpcChannel, SessionMode } from '../core/constants';
-import type { SdkImage, SdkPermissionRequestPayload, SdkPermissionResponsePayload } from '../core/constants';
+import type { SdkImage, SdkPermissionRequestPayload, SdkPermissionResponsePayload, SdkTodo } from '../core/constants';
 
 export interface UsageSummary {
   inputTokens: number;
@@ -148,8 +148,8 @@ const api = {
       return () => ipcRenderer.removeListener(IpcChannel.SdkTitle, handler);
     },
 
-    onActivity: (callback: (event: { id: string; activity: string; detail?: string; subagentCount?: number; lastActiveAt?: number }) => void) => {
-      const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; activity: string; detail?: string; subagentCount?: number; lastActiveAt?: number }) =>
+    onActivity: (callback: (event: { id: string; activity: string; detail?: string; subagentCount?: number; lastActiveAt?: number; tokens?: number }) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; activity: string; detail?: string; subagentCount?: number; lastActiveAt?: number; tokens?: number }) =>
         callback(payload);
       ipcRenderer.on(IpcChannel.SdkActivity, handler);
       return () => ipcRenderer.removeListener(IpcChannel.SdkActivity, handler);
@@ -164,6 +164,13 @@ const api = {
 
     respondPermission: (response: SdkPermissionResponsePayload): Promise<void> =>
       ipcRenderer.invoke(IpcChannel.SdkPermissionResponse, response),
+
+    onTodos: (callback: (event: { id: string; todos: SdkTodo[] }) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, payload: { id: string; todos: SdkTodo[] }) =>
+        callback(payload);
+      ipcRenderer.on(IpcChannel.SdkTodos, handler);
+      return () => ipcRenderer.removeListener(IpcChannel.SdkTodos, handler);
+    },
   },
 
   selectDirectory: (): Promise<string | null> =>

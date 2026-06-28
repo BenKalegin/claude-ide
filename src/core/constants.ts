@@ -52,8 +52,27 @@ export const IpcChannel = {
   SessionModel: 'session-model',
   SdkPermissionRequest: 'sdk-permission-request',
   SdkPermissionResponse: 'sdk-permission-response',
+  SdkTodos: 'sdk-todos',
 } as const;
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
+
+// Claude's task-tracking tool. We auto-allow it (no permission prompt — it's
+// internal bookkeeping) and render its task list in the SDK view, mirroring
+// what the TTY shows inline.
+export const TODO_WRITE_TOOL = 'TodoWrite';
+
+export const SdkTodoStatus = {
+  Pending: 'pending',
+  InProgress: 'in_progress',
+  Completed: 'completed',
+} as const;
+export type SdkTodoStatus = (typeof SdkTodoStatus)[keyof typeof SdkTodoStatus];
+
+export interface SdkTodo {
+  content: string;
+  status: SdkTodoStatus;
+  activeForm?: string;
+}
 
 // Interactive confirmation for SDK (Node.js) sessions. Unlike TTY sessions
 // (where Claude prints its own permission prompt in the console), SDK sessions

@@ -31,6 +31,14 @@ interface SessionInfo {
   subagentCount?: number;
   lastActiveAt?: number;
   unbounded?: boolean;
+  liveTokens?: number;
+  todos?: SdkTodo[];
+}
+
+interface SdkTodo {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  activeForm?: string;
 }
 
 interface ChildProcess {
@@ -106,9 +114,10 @@ interface Window {
       onMessage: (callback: (event: { id: string; message: SdkMessage }) => void) => () => void;
       onCost: (callback: (event: { id: string; totalCost: number }) => void) => () => void;
       onTitle: (callback: (event: { id: string; title: string; summary: string }) => void) => () => void;
-      onActivity: (callback: (event: { id: string; activity: string; detail?: string; subagentCount?: number; lastActiveAt?: number }) => void) => () => void;
+      onActivity: (callback: (event: { id: string; activity: string; detail?: string; subagentCount?: number; lastActiveAt?: number; tokens?: number }) => void) => () => void;
       onPermissionRequest: (callback: (payload: SdkPermissionRequestPayload) => void) => () => void;
       respondPermission: (response: SdkPermissionResponsePayload) => Promise<void>;
+      onTodos: (callback: (event: { id: string; todos: SdkTodo[] }) => void) => () => void;
     };
     selectDirectory: () => Promise<string | null>;
     getLogPath: () => Promise<string>;

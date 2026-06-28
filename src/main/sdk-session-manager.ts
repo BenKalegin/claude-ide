@@ -16,12 +16,14 @@ import {
   SessionMode,
   SessionStatus,
   SdkMessageType,
+  TODO_WRITE_TOOL,
 } from '../core/constants';
 import type {
   SdkImage,
   SdkPermissionRequestPayload,
   SdkPermissionResponsePayload,
   SdkQuestion,
+  SdkTodo,
 } from '../core/constants';
 
 // The two shapes the Agent SDK's canUseTool callback may return.
@@ -39,6 +41,15 @@ interface PendingPermission {
 }
 
 const TOOL_SUMMARY_MAX_CHARS = 300;
+const STREAM_DETAIL_MAX_CHARS = 60;
+
+// Live, per-block streaming state used to surface what a tool is actually
+// doing (the command / file / pattern) as its input streams in.
+interface StreamState {
+  toolName: string;
+  json: string;
+  detail?: string;
+}
 import { getDefaultModelForProvider } from './agent-terminal-provider';
 
 const log = createLogger('sdk');
@@ -70,6 +81,7 @@ export interface SdkSessionInfo {
   contextTokens?: number;
   maxContextTokens?: number;
   model: string;
+  todos?: SdkTodo[];
 }
 
 interface PersistedSdkState {
@@ -146,6 +158,13 @@ export class SdkSessionManager {
   private pendingPermissions: Map<string, PendingPermission> = new Map();
   // Tools the user chose "Allow for session" on, per session id.
   private sessionAllowedTools: Map<string, Set<string>> = new Map();
+  // In-flight tool block per session, for live "what is it doing" detail.
+  private streamState: Map<string, StreamState> = new Map();
+  // Live output-token tally for the current turn, per session. `base` is the
+  // total from completed assistant messages this turn; `current` is the
+  // in-progress message's cumulative output tokens. Displayed sum grows
+  // monotonically across a multi-step turn as a progress indicator.
+  private liveTokens: Map<string, { base: number; current: number }> = new Map();
 
   constructor() {
     this.loadUsageHistory();
@@ -205,6 +224,7 @@ export class SdkSessionManager {
 
     session.status = SessionStatus.Thinking;
     this.emitStatus(id, SessionStatus.Thinking);
+    this.liveTokens.set(id, { base: 0, current: 0 });
 
     const userBubbleText = imageCount > 0
       ? (prompt ? `${prompt}\n[${imageCount} image${imageCount === 1 ? '' : 's'} attached]` : `[${imageCount} image${imageCount === 1 ? '' : 's'} attached]`)
@@ -435,6 +455,8 @@ export class SdkSessionManager {
       active.controller.abort();
       this.activeQueries.delete(id);
     }
+    this.streamState.delete(id);
+    this.liveTokens.delete(id);
     // Unblock any popup still waiting on this session so the stream can unwind.
     this.rejectPendingForSession(id, 'Cancelled.');
   }
@@ -449,6 +471,12 @@ export class SdkSessionManager {
     input: Record<string, unknown>,
     opts: { signal?: AbortSignal; toolUseID?: string }
   ): Promise<PermissionResult> {
+    // Task tracking: capture the list for the UI and auto-allow (no prompt).
+    if (toolName === TODO_WRITE_TOOL) {
+      this.captureTodos(sessionId, input);
+      return Promise.resolve({ behavior: 'allow', updatedInput: input });
+    }
+
     const isQuestion = toolName === ASK_USER_QUESTION_TOOL;
     if (!isQuestion) {
       if ((PERMISSION_AUTO_ALLOW_TOOLS as readonly string[]).includes(toolName)) {
@@ -712,8 +740,27 @@ export class SdkSessionManager {
     this.send(IpcChannel.SdkCost, { id, totalCost });
   }
 
-  private emitActivity(id: string, activity: SessionActivity, detail?: string): void {
-    this.send(IpcChannel.SdkActivity, { id, activity, detail });
+  private emitActivity(id: string, activity: SessionActivity, detail?: string, tokens?: number): void {
+    this.send(IpcChannel.SdkActivity, { id, activity, detail, tokens });
+  }
+
+  // Snapshot the latest TodoWrite task list onto the session and push it to the
+  // renderer. TodoWrite always sends the full list, so this replaces (not
+  // appends) — the panel always reflects the current state.
+  private captureTodos(sessionId: string, input: Record<string, unknown>): void {
+    const raw = input.todos;
+    if (!Array.isArray(raw)) return;
+    const todos: SdkTodo[] = raw
+      .filter((t): t is Record<string, unknown> => !!t && typeof t === 'object')
+      .map((t) => ({
+        content: String(t.content ?? ''),
+        status: (t.status as SdkTodo['status']) ?? 'pending',
+        activeForm: typeof t.activeForm === 'string' ? t.activeForm : undefined,
+      }))
+      .filter((t) => t.content);
+    const session = this.sessions.get(sessionId);
+    if (session) session.todos = todos;
+    this.send(IpcChannel.SdkTodos, { id: sessionId, todos });
   }
 
   private handleStreamEvent(id: string, session: SdkSessionInfo, event: Record<string, unknown>): void {
@@ -724,34 +771,112 @@ export class SdkSessionManager {
         const block = event.content_block as Record<string, unknown> | undefined;
         if (!block) break;
         if (block.type === 'thinking') {
+          this.streamState.delete(id);
           session.activity = SessionActivity.Thinking;
           session.activityDetail = undefined;
           this.emitActivity(id, SessionActivity.Thinking);
         } else if (block.type === 'tool_use') {
           const toolName = (block.name as string) || 'tool';
+          // Seed live state; the real command/file streams in via deltas.
+          this.streamState.set(id, { toolName, json: '', detail: toolName });
           session.activity = SessionActivity.UsingTool;
           session.activityDetail = toolName;
           this.emitActivity(id, SessionActivity.UsingTool, toolName);
         } else if (block.type === 'text') {
+          this.streamState.delete(id);
           session.activity = SessionActivity.Streaming;
           session.activityDetail = undefined;
           this.emitActivity(id, SessionActivity.Streaming);
         }
         break;
       }
+      case 'content_block_delta': {
+        const delta = event.delta as Record<string, unknown> | undefined;
+        if (!delta || delta.type !== 'input_json_delta' || typeof delta.partial_json !== 'string') break;
+        const st = this.streamState.get(id);
+        if (!st) break;
+        st.json += delta.partial_json;
+        const detail = this.streamingToolDetail(st.toolName, st.json);
+        if (detail !== st.detail) {
+          st.detail = detail;
+          session.activity = SessionActivity.UsingTool;
+          session.activityDetail = detail;
+          this.emitActivity(id, SessionActivity.UsingTool, detail);
+        }
+        break;
+      }
       case 'content_block_stop': {
-        session.activity = SessionActivity.Thinking;
-        session.activityDetail = undefined;
-        this.emitActivity(id, SessionActivity.Thinking);
+        const st = this.streamState.get(id);
+        if (st) {
+          // Args finished streaming; the tool now actually runs. Keep showing
+          // the command/file (not a generic "Thinking") for the duration.
+          this.streamState.delete(id);
+          session.activity = SessionActivity.UsingTool;
+          session.activityDetail = st.detail;
+          this.emitActivity(id, SessionActivity.UsingTool, st.detail);
+        } else {
+          session.activity = SessionActivity.Thinking;
+          session.activityDetail = undefined;
+          this.emitActivity(id, SessionActivity.Thinking);
+        }
+        break;
+      }
+      case 'message_delta': {
+        const usage = event.usage as { output_tokens?: number } | undefined;
+        if (usage && typeof usage.output_tokens === 'number') {
+          const lt = this.liveTokens.get(id) ?? { base: 0, current: 0 };
+          lt.current = usage.output_tokens;
+          this.liveTokens.set(id, lt);
+          this.emitActivity(
+            id,
+            session.activity ?? SessionActivity.Streaming,
+            session.activityDetail,
+            lt.base + lt.current
+          );
+        }
         break;
       }
       case 'message_stop': {
+        // Fold this message's tokens into the turn total so the next message
+        // continues growing from here rather than resetting.
+        const lt = this.liveTokens.get(id);
+        if (lt) {
+          lt.base += lt.current;
+          lt.current = 0;
+        }
+        this.streamState.delete(id);
         session.activity = SessionActivity.Idle;
         session.activityDetail = undefined;
         this.emitActivity(id, SessionActivity.Idle);
         break;
       }
     }
+  }
+
+  // Extract a human-readable action from a tool's (possibly partial) streamed
+  // JSON input — the command for Bash, the path for Write/Edit/Read, etc. Falls
+  // back to the tool name until a recognizable field has streamed in.
+  private streamingToolDetail(toolName: string, json: string): string {
+    const patterns = [
+      /"command"\s*:\s*"((?:[^"\\]|\\.)*)"/,
+      /"file_path"\s*:\s*"((?:[^"\\]|\\.)*)"/,
+      /"path"\s*:\s*"((?:[^"\\]|\\.)*)"/,
+      /"pattern"\s*:\s*"((?:[^"\\]|\\.)*)"/,
+      /"url"\s*:\s*"((?:[^"\\]|\\.)*)"/,
+    ];
+    for (const re of patterns) {
+      const m = json.match(re);
+      if (m && m[1]) {
+        const clean = m[1].replace(/\\n/g, ' ').replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim();
+        if (clean) {
+          const short = clean.length > STREAM_DETAIL_MAX_CHARS
+            ? `${clean.slice(0, STREAM_DETAIL_MAX_CHARS)}…`
+            : clean;
+          return `${toolName}: ${short}`;
+        }
+      }
+    }
+    return toolName;
   }
 
   private emitTitle(id: string, title: string, summary: string): void {
