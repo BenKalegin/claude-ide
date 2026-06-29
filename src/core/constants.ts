@@ -98,6 +98,10 @@ export type PermissionDecision = (typeof PermissionDecision)[keyof typeof Permis
 // default posture (writes / Bash / everything else still prompt).
 export const PERMISSION_AUTO_ALLOW_TOOLS = ['Read', 'Glob', 'Grep'] as const;
 
+// Claude's shell tool. SDK (node) sessions route every Bash command through
+// `canUseTool`, so the permission rules inspect its command string.
+export const BASH_TOOL = 'Bash';
+
 // The built-in tool Claude calls to ask the user a multiple-choice question.
 export const ASK_USER_QUESTION_TOOL = 'AskUserQuestion';
 

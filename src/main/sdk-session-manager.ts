@@ -7,9 +7,9 @@ import { createLogger } from './logger';
 import {
   AgentProvider,
   ASK_USER_QUESTION_TOOL,
+  BASH_TOOL,
   DEFAULT_AGENT_PROVIDER,
   IpcChannel,
-  PERMISSION_AUTO_ALLOW_TOOLS,
   PermissionDecision,
   PermissionRequestKind,
   SessionActivity,
@@ -18,6 +18,7 @@ import {
   SdkMessageType,
   TODO_WRITE_TOOL,
 } from '../core/constants';
+import { evaluatePermission, PermissionEffect } from '../core/permission-rules';
 import type {
   SdkImage,
   SdkPermissionRequestPayload,
@@ -25,6 +26,10 @@ import type {
   SdkQuestion,
   SdkTodo,
 } from '../core/constants';
+
+// Shared empty allowlist for sessions that haven't approved any tool yet —
+// avoids allocating a throwaway Set on every permission check.
+const NO_SESSION_TOOLS: ReadonlySet<string> = new Set<string>();
 
 // The two shapes the Agent SDK's canUseTool callback may return.
 type PermissionResult =
@@ -302,12 +307,12 @@ export class SdkSessionManager {
             });
           }
 
-          // Track context from result messages
-          const resultData = message as Record<string, unknown>;
-          if (sdkMsg.type === SdkMessageType.Result && resultData.usage) {
-            const usage = resultData.usage as Record<string, number>;
-            session.contextTokens = (usage.inputTokens || 0) + (usage.outputTokens || 0);
-            session.maxContextTokens = usage.contextWindow || 0;
+          // Track context-window usage from result messages. Token counts live
+          // on `usage` (snake_case) but the window size is only on `modelUsage`.
+          if (sdkMsg.type === SdkMessageType.Result) {
+            const { inputTokens, outputTokens } = this.parseResultUsage(message as Record<string, unknown>);
+            session.contextTokens = inputTokens + outputTokens;
+            session.maxContextTokens = this.extractContextWindow(message as Record<string, unknown>);
           }
         }
       }
@@ -479,10 +484,12 @@ export class SdkSessionManager {
 
     const isQuestion = toolName === ASK_USER_QUESTION_TOOL;
     if (!isQuestion) {
-      if ((PERMISSION_AUTO_ALLOW_TOOLS as readonly string[]).includes(toolName)) {
-        return Promise.resolve({ behavior: 'allow', updatedInput: input });
-      }
-      if (this.sessionAllowedTools.get(sessionId)?.has(toolName)) {
+      const effect = evaluatePermission({
+        toolName,
+        command: toolName === BASH_TOOL && typeof input.command === 'string' ? input.command : undefined,
+        sessionAllowedTools: this.sessionAllowedTools.get(sessionId) ?? NO_SESSION_TOOLS,
+      });
+      if (effect === PermissionEffect.Allow) {
         return Promise.resolve({ behavior: 'allow', updatedInput: input });
       }
     }
@@ -565,6 +572,39 @@ export class SdkSessionManager {
     return JSON.stringify(input).slice(0, TOOL_SUMMARY_MAX_CHARS);
   }
 
+  // Pull token counts and dollar cost out of an Agent SDK `result` message.
+  // The SDK reports tokens under `usage` (snake_case, straight from the
+  // Anthropic API) and the run's dollar cost under top-level `total_cost_usd`.
+  // `usage.input_tokens` counts only *uncached* input, so we fold in cache
+  // reads/writes — otherwise prompt caching makes the input look near-zero.
+  private parseResultUsage(message: Record<string, unknown>): {
+    inputTokens: number;
+    outputTokens: number;
+    totalUsd: number;
+  } {
+    const usage = (message.usage ?? {}) as Record<string, number>;
+    const inputTokens =
+      (usage.input_tokens || 0) +
+      (usage.cache_read_input_tokens || 0) +
+      (usage.cache_creation_input_tokens || 0);
+    const outputTokens = usage.output_tokens || 0;
+    const totalUsd = typeof message.total_cost_usd === 'number' ? message.total_cost_usd : 0;
+    return { inputTokens, outputTokens, totalUsd };
+  }
+
+  // The context-window size is reported per-model under `modelUsage` (camelCase,
+  // SDK-aggregated) rather than on `usage`. Take the largest window across the
+  // models touched this turn.
+  private extractContextWindow(message: Record<string, unknown>): number {
+    const modelUsage = message.modelUsage as Record<string, { contextWindow?: number }> | undefined;
+    if (!modelUsage) return 0;
+    let max = 0;
+    for (const m of Object.values(modelUsage)) {
+      if (m.contextWindow && m.contextWindow > max) max = m.contextWindow;
+    }
+    return max;
+  }
+
   private transformMessage(message: Record<string, unknown>): SdkMessage | null {
     const type = message.type as string;
 
@@ -602,16 +642,13 @@ export class SdkSessionManager {
         };
       }
       case SdkMessageType.Result: {
-        const cost = message.cost as { input_tokens?: number; output_tokens?: number; total_usd?: number } | undefined;
+        const { inputTokens, outputTokens, totalUsd } = this.parseResultUsage(message);
+        const hasUsage = inputTokens > 0 || outputTokens > 0 || totalUsd > 0;
         return {
           type: SdkMessageType.Result,
           content: (message.result as string) || 'Completed',
           timestamp: Date.now(),
-          cost: cost ? {
-            inputTokens: cost.input_tokens || 0,
-            outputTokens: cost.output_tokens || 0,
-            totalUsd: cost.total_usd || 0,
-          } : undefined,
+          cost: hasUsage ? { inputTokens, outputTokens, totalUsd } : undefined,
         };
       }
       default:
