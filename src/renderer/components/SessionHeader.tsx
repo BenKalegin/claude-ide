@@ -4,6 +4,7 @@ import {
   AgentProvider,
   ClaudeModel,
   DEFAULT_CODEX_MODEL,
+  DEFAULT_KIRO_MODEL,
   DEFAULT_MODEL,
 } from '../../core/constants';
 
@@ -34,6 +35,10 @@ const CODEX_MODELS = [
   { value: DEFAULT_CODEX_MODEL, label: 'Default' },
 ] as const;
 
+const KIRO_MODELS = [
+  { value: DEFAULT_KIRO_MODEL, label: 'Default' },
+] as const;
+
 const TTY_SHORTCUTS: Array<[string, string]> = [
   ['⌘Z / ⇧⌘Z', 'Undo / redo last typed-or-pasted chunk'],
   ['⌘⌫', 'Clear entire prompt'],
@@ -62,9 +67,18 @@ export function SessionHeader({ sessionId }: Props): React.ReactElement | null {
   const displayProject = projectNames.get(session.projectPath) || session.projectName;
   const displaySession = session.title || 'Untitled';
   const provider = session.provider || AgentProvider.Claude;
-  const modelOptions = provider === AgentProvider.Codex ? CODEX_MODELS : CLAUDE_MODELS;
-  const fallbackModel = provider === AgentProvider.Codex ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL;
-  const providerLabel = provider === AgentProvider.Codex ? 'Codex' : 'Claude';
+  const modelOptions =
+    provider === AgentProvider.Codex ? CODEX_MODELS
+    : provider === AgentProvider.Kiro ? KIRO_MODELS
+    : CLAUDE_MODELS;
+  const fallbackModel =
+    provider === AgentProvider.Codex ? DEFAULT_CODEX_MODEL
+    : provider === AgentProvider.Kiro ? DEFAULT_KIRO_MODEL
+    : DEFAULT_MODEL;
+  const providerLabel =
+    provider === AgentProvider.Codex ? 'Codex'
+    : provider === AgentProvider.Kiro ? 'Kiro'
+    : 'Claude';
 
   const handleModelChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const model = e.target.value;

@@ -27,7 +27,11 @@ function getSessionLabel(s: SessionInfo): string {
 }
 
 function getProviderLabel(provider: AgentProvider | undefined): string {
-  return provider === AgentProvider.Codex ? 'Codex' : 'Claude';
+  switch (provider) {
+    case AgentProvider.Codex: return 'Codex';
+    case AgentProvider.Kiro: return 'Kiro';
+    default: return 'Claude';
+  }
 }
 
 function formatActivity(activity: string, detail?: string): string {
@@ -315,6 +319,9 @@ export function ProjectTree(): React.ReactElement {
               </button>
               <button onClick={() => handleNewSession(group.projectPath, SessionMode.Terminal, AgentProvider.Codex)}>
                 <span className="mode-icon">&#9654;</span> Codex Terminal
+              </button>
+              <button onClick={() => handleNewSession(group.projectPath, SessionMode.Terminal, AgentProvider.Kiro)}>
+                <span className="mode-icon">&#9654;</span> Kiro Terminal
               </button>
             </div>
           )}

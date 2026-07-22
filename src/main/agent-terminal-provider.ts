@@ -5,12 +5,23 @@ import * as path from 'path';
 import {
   AgentProvider,
   DEFAULT_CODEX_MODEL,
+  DEFAULT_KIRO_MODEL,
   DEFAULT_MODEL,
 } from '../core/constants';
 
 const TerminalCommand = {
   Claude: 'claude',
   Codex: 'codex',
+  Kiro: 'kiro-cli',
+} as const;
+
+// Kiro CLI is invoked as `kiro-cli chat`; these flags live on the `chat`
+// subcommand (see `kiro-cli chat --help`). `--resume` continues the most recent
+// conversation in the cwd (the analog of Claude's `--continue`).
+const KiroCliArg = {
+  Chat: 'chat',
+  Resume: '--resume',
+  Model: '--model',
 } as const;
 
 const CliArg = {
@@ -132,6 +143,13 @@ function buildCodexModelArgs(model?: string): string[] {
   return [CliArg.Model, model];
 }
 
+// Kiro's "Default" model means "use the CLI's configured default", so we omit
+// --model entirely for it; any other value is passed through verbatim.
+function buildKiroModelArgs(model?: string): string[] {
+  if (!model || model === DEFAULT_KIRO_MODEL) return [];
+  return [KiroCliArg.Model, model];
+}
+
 const claudeTerminalProvider: AgentTerminalProvider = {
   provider: AgentProvider.Claude,
   resolveExecutable: () => resolveCommandPath(TerminalCommand.Claude),
@@ -164,10 +182,26 @@ const codexTerminalProvider: AgentTerminalProvider = {
   buildResumeArgs: (session) => buildCodexModelArgs(session.model),
 };
 
+// Kiro runs as `kiro-cli chat`. Like Codex, it manages its own conversation
+// history, so we don't pin/detect a provider session id; resume just asks the
+// CLI to continue the most recent conversation in the project dir (`--resume`).
+const kiroTerminalProvider: AgentTerminalProvider = {
+  provider: AgentProvider.Kiro,
+  resolveExecutable: () => resolveCommandPath(TerminalCommand.Kiro),
+  buildStartArgs: (model) => [KiroCliArg.Chat, ...buildKiroModelArgs(model)],
+  buildResumeArgs: (session) => [
+    KiroCliArg.Chat,
+    KiroCliArg.Resume,
+    ...buildKiroModelArgs(session.model),
+  ],
+};
+
 export function getTerminalProvider(provider: AgentProvider): AgentTerminalProvider {
   switch (provider) {
     case AgentProvider.Codex:
       return codexTerminalProvider;
+    case AgentProvider.Kiro:
+      return kiroTerminalProvider;
     case AgentProvider.Claude:
     default:
       return claudeTerminalProvider;
@@ -178,6 +212,8 @@ export function getDefaultModelForProvider(provider: AgentProvider): string {
   switch (provider) {
     case AgentProvider.Codex:
       return DEFAULT_CODEX_MODEL;
+    case AgentProvider.Kiro:
+      return DEFAULT_KIRO_MODEL;
     case AgentProvider.Claude:
     default:
       return DEFAULT_MODEL;

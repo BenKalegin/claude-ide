@@ -7,6 +7,7 @@ export type SessionMode = (typeof SessionMode)[keyof typeof SessionMode];
 export const AgentProvider = {
   Claude: 'claude',
   Codex: 'codex',
+  Kiro: 'kiro',
 } as const;
 export type AgentProvider = (typeof AgentProvider)[keyof typeof AgentProvider];
 
@@ -170,8 +171,17 @@ export const CodexModel = {
 } as const;
 export type CodexModel = (typeof CodexModel)[keyof typeof CodexModel];
 
+// Kiro CLI has its own configured default model; we don't hardcode a catalog of
+// names (they change), so the dropdown offers just "Default" and we omit the
+// --model flag, letting `kiro-cli chat` use whatever the user configured.
+export const KiroModel = {
+  Default: 'default',
+} as const;
+export type KiroModel = (typeof KiroModel)[keyof typeof KiroModel];
+
 export const DEFAULT_MODEL: ClaudeModel = ClaudeModel.Sonnet;
 export const DEFAULT_CODEX_MODEL: CodexModel = CodexModel.Default;
+export const DEFAULT_KIRO_MODEL: KiroModel = KiroModel.Default;
 
 export const PTY_TERM = 'xterm-256color';
 export const PTY_DEFAULT_COLS = 120;

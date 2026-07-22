@@ -124,7 +124,13 @@ const PICKER_ARROW_DELAY_MS = 120;
 const PICKER_SETTLE_MS = 200;
 
 function normalizeAgentProvider(provider?: AgentProvider): AgentProvider {
-  return provider === AgentProvider.Codex ? AgentProvider.Codex : AgentProvider.Claude;
+  switch (provider) {
+    case AgentProvider.Codex:
+    case AgentProvider.Kiro:
+      return provider;
+    default:
+      return AgentProvider.Claude;
+  }
 }
 
 export class SessionManager {

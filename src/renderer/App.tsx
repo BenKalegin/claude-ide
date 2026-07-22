@@ -139,6 +139,9 @@ export function App(): React.ReactElement {
                   <button onClick={() => handleNewProject(SessionMode.Terminal, AgentProvider.Codex)}>
                     <span className="mode-icon">&#9654;</span> Codex Terminal
                   </button>
+                  <button onClick={() => handleNewProject(SessionMode.Terminal, AgentProvider.Kiro)}>
+                    <span className="mode-icon">&#9654;</span> Kiro Terminal
+                  </button>
                 </div>
               )}
             </div>
