@@ -338,7 +338,7 @@ export class SessionManager {
     this.sessions.set(id, session);
     this.ptys.set(id, pty);
 
-    this.activityStates.set(id, createTtyState());
+    this.activityStates.set(id, createTtyState(provider));
     this.outputBuffers.delete(id);
     this.seedTranscriptModelOffset(session);
 
@@ -405,11 +405,13 @@ export class SessionManager {
     session.status = SessionStatus.Active;
     session.pid = pty.pid;
     this.ptys.set(id, pty);
-    this.activityStates.set(id, createTtyState());
-    // A --resume session redraws its own history into the terminal, so drop the
-    // stale buffer to avoid duplicated content. A fresh (no-transcript) session
-    // has nothing to redraw — keep the restored scrollback as its history.
-    if (!resumeFresh) this.outputBuffers.delete(id);
+    this.activityStates.set(id, createTtyState(session.provider));
+    // Some CLIs (Claude) repaint their full history into the terminal on
+    // resume, so we drop our saved scrollback to avoid showing it twice. Others
+    // (Kiro, Codex) resume silently without repainting — keep the restored
+    // scrollback so the pane isn't blank. A fresh (no-transcript) relaunch also
+    // has nothing to repaint, so keep it there too.
+    if (!resumeFresh && terminalProvider.redrawsHistoryOnResume) this.outputBuffers.delete(id);
     this.seedTranscriptModelOffset(session);
 
     pty.onData((data) => this.handlePtyData(id, data));

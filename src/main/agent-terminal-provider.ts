@@ -67,6 +67,11 @@ export interface TerminalProviderSession {
 
 export interface AgentTerminalProvider {
   readonly provider: AgentProvider;
+  // True when the CLI repaints its full conversation history into the terminal
+  // on resume (Claude does). When true, the session manager drops its own saved
+  // scrollback on resume to avoid duplicated output; when false/absent, it keeps
+  // the scrollback so the user still sees prior output (Kiro/Codex don't repaint).
+  readonly redrawsHistoryOnResume?: boolean;
   resolveExecutable(): string;
   buildStartArgs(model?: string, unbounded?: boolean, sessionId?: string): string[];
   buildResumeArgs(session: TerminalProviderSession): string[];
@@ -152,6 +157,7 @@ function buildKiroModelArgs(model?: string): string[] {
 
 const claudeTerminalProvider: AgentTerminalProvider = {
   provider: AgentProvider.Claude,
+  redrawsHistoryOnResume: true,
   resolveExecutable: () => resolveCommandPath(TerminalCommand.Claude),
   // Pin the transcript id to our own session id with --session-id so the file
   // is known deterministically (claude writes <sessionId>.jsonl). This removes
