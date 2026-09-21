@@ -29,6 +29,7 @@ import {
 import { createTtyState, ingest, snapshot, clearWaiting } from './tty-activity';
 import type { TtyActivitySnapshot } from './tty-activity';
 import { getDefaultModelForProvider, getTerminalProvider } from './agent-terminal-provider';
+import type { TerminalProviderSavedSession } from './agent-terminal-provider';
 
 const ACTIVITY_POLL_MS = 750;
 const PROVIDER_SESSION_ID_DETECT_MS = 6000;
@@ -101,9 +102,41 @@ const TITLE_MAX_CHARS = 40;
 const SUMMARY_MAX_CHARS = 200;
 const SUMMARIZE_MODEL = 'haiku';
 const TITLE_GENERATION_DELAY = 10000;
+const TITLE_CONTEXT_MAX_LINES = 40;
+const TITLE_CONTEXT_MESSAGE_MAX_CHARS = 300;
+const TITLE_CONTEXT_MIN_MESSAGE_CHARS = 10;
+const TITLE_MIN_TRUNCATION_CHARS = 20;
+const KIRO_MIGRATION_MAX_TIME_DELTA_MS = 14 * 24 * 60 * 60 * 1000;
+const KIRO_MIGRATION_MIN_SCORE = 0.75;
 // Don't re-title a session more than once per this interval, even if it goes
 // idle repeatedly — each refresh is a haiku call.
 const TITLE_REFRESH_MIN_INTERVAL_MS = 90_000;
+
+// Terminal providers without a readable transcript (currently Kiro and Codex)
+// fall back to their persisted scrollback for title generation. Strip the TUI's
+// control traffic and ignore its repeatedly-redrawn status/footer lines so the
+// summarizer sees conversation content rather than terminal chrome.
+const ANSI_ESCAPE_PATTERN = /\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -\/]*[@-~]|[()][0-9A-Z])/g;
+const TERMINAL_PROMPT_MARKER = '›';
+const TERMINAL_TITLE_NOISE_PATTERNS = [
+  /^[-─━│┃┌-╋\s]+$/,
+  /^[⠀-⣿\s]*(?:Launching|Initializing|Thinking)\.*/i,
+  /ask a question or describe a task/i,
+  /Kiro is working/i,
+  /How did Kiro do/i,
+  /\/copy to clipboard/i,
+  /esc to cancel/i,
+  /ctrl\+y to rate/i,
+  /^Credits:/i,
+] as const;
+const TITLE_MATCH_WORD_PATTERN = /[a-z0-9]{3,}/g;
+const TITLE_MATCH_STOP_WORDS = new Set([
+  'and', 'are', 'but', 'can', 'does', 'for', 'from', 'have', 'how', 'into',
+  'not', 'our', 'that', 'the', 'this', 'was', 'were', 'what', 'with', 'you', 'your',
+]);
+const TITLE_CORRECTION_PREFIX_PATTERN = /^(?:wait|no\b|actually\b)/i;
+const TITLE_FILLER_PREFIX_PATTERN = /^(?:(?:ok|okay)[,.]?\s+|also\s+|please\s+|check\s+|we (?:will )?need to\s+|i (?:need|want) (?:you )?to\s+|can you\s+|take into account feedback:\s*)+/i;
+const TITLE_USER_REQUEST_PATTERN = /(?:User request|Instruction):\s*/gi;
 
 const STATE_DIR = path.join(os.homedir(), '.claude-ide');
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
@@ -257,12 +290,12 @@ export class SessionManager {
     this.window.webContents.send(channel, ...args);
   }
 
-  createSession(
+  async createSession(
     projectPath: string,
     mode: SessionMode = SessionMode.Terminal,
     provider: AgentProvider = DEFAULT_AGENT_PROVIDER,
     unbounded = false
-  ): SessionInfo {
+  ): Promise<SessionInfo> {
     const id = crypto.randomUUID();
     const projectName = path.basename(projectPath);
     const model = getDefaultModelForProvider(provider);
@@ -292,7 +325,7 @@ export class SessionManager {
     // own session id up front — deterministic, no dir-watching race. Codex has
     // no such flag, so it still falls back to post-spawn detection.
     const pinnedSessionId = provider === AgentProvider.Claude ? id : undefined;
-    const historyBaseline = this.snapshotProviderHistory(provider, projectPath);
+    const historyBaseline = await this.snapshotProviderHistory(provider, projectPath);
     let pty: IPty;
     try {
       pty = ptySpawn(executablePath, terminalProvider.buildStartArgs(model, unbounded, pinnedSessionId), {
@@ -367,7 +400,7 @@ export class SessionManager {
     return session;
   }
 
-  resumeSession(id: string): SessionInfo | null {
+  async resumeSession(id: string): Promise<SessionInfo | null> {
     const session = this.sessions.get(id);
     if (!session) return null;
     if (session.mode === SessionMode.Sdk) {
@@ -393,7 +426,7 @@ export class SessionManager {
     log.info(`Resuming session ${id} with args: ${args.join(' ')}`);
     const historyBaseline = session.providerSessionId
       ? new Set<string>()
-      : this.snapshotProviderHistory(session.provider, session.projectPath);
+      : await this.snapshotProviderHistory(session.provider, session.projectPath);
     const pty = ptySpawn(executablePath, args, {
       name: PTY_TERM,
       cols: PTY_DEFAULT_COLS,
@@ -651,11 +684,11 @@ export class SessionManager {
     }
   }
 
-  autoResumeSessions(): void {
+  async autoResumeSessions(): Promise<void> {
     for (const session of this.sessions.values()) {
       if (session.mode === SessionMode.Terminal && session.status === SessionStatus.Stopped && !this.ptys.has(session.id)) {
         log.info(`Auto-resuming terminal session: ${session.id} (${session.projectName})`);
-        this.resumeSession(session.id);
+        await this.resumeSession(session.id);
       }
     }
   }
@@ -684,102 +717,195 @@ export class SessionManager {
   private async updateTtyTitle(session: SessionInfo, refresh = false): Promise<void> {
     if (session.title && !refresh) return;
     try {
-      const terminalProvider = getTerminalProvider(session.provider);
-      const projectsDir = terminalProvider.getHistoryDir?.(session.projectPath);
-      if (!projectsDir) return;
-
-      const encodedCwd = session.projectPath.replace(/[^a-zA-Z0-9]/g, '-');
-      const sessionDir = path.join(projectsDir, encodedCwd);
-      log.debug(`TTY title: checking ${sessionDir}`);
-      if (!fs.existsSync(sessionDir)) {
-        log.debug(`TTY title: dir not found for ${session.projectName}`);
-        return;
-      }
-
-      // Prefer the session's own transcript so multi-session projects don't
-      // cross-title from a sibling's newer file; fall back to newest by mtime.
-      const ownFile = session.providerSessionId
-        ? path.join(sessionDir, `${session.providerSessionId}.jsonl`)
-        : null;
-      let sessionFile: string;
-      if (ownFile && fs.existsSync(ownFile)) {
-        sessionFile = ownFile;
-      } else {
-        const files = fs.readdirSync(sessionDir)
-          .filter((f) => f.endsWith('.jsonl'))
-          .map((f) => ({ name: f, mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
-          .sort((a, b) => b.mtime - a.mtime);
-        if (files.length === 0) {
-          log.debug(`TTY title: no JSONL files for ${session.projectName}`);
-          return;
-        }
-        sessionFile = path.join(sessionDir, files[0].name);
-      }
-      const lines = fs.readFileSync(sessionFile, 'utf-8').trim().split('\n');
-      log.debug(`TTY title: reading ${path.basename(sessionFile)} (${lines.length} lines)`);
-
-      const userMessages: string[] = [];
-      // Scan all lines — user messages can be sparse among tool calls and file snapshots
-      for (const line of lines) {
-        try {
-          const msg = JSON.parse(line);
-          if (msg.type !== 'user') continue;
-          const raw = msg.message?.content ?? msg.content;
-          let text = '';
-          if (typeof raw === 'string') {
-            text = raw;
-          } else if (Array.isArray(raw)) {
-            text = raw
-              .filter((b: { type: string }) => b.type === 'text')
-              .map((b: { text: string }) => b.text)
-              .join(' ');
-          }
-          // Skip system/meta messages
-          if (text && text.length > 10 && !text.startsWith('<')) {
-            userMessages.push(text.slice(0, 100));
-          }
-        } catch { /* skip malformed lines */ }
-      }
+      const userMessages = this.titleContextForSession(session);
 
       if (userMessages.length === 0) {
-        log.debug(`TTY title: no user messages found for ${session.projectName}`);
+        log.debug(`TTY title: no usable context found for ${session.projectName}`);
         return;
       }
 
-      log.info(`TTY title: generating for ${session.projectName} (${userMessages.length} user msgs found)`);
+      log.info(`TTY title: generating for ${session.projectName} (${userMessages.length} context snippets found)`);
 
-      const excerpt = userMessages.slice(-3).join('\n');
-      const prompt = `These are the last few user messages in a coding session:\n${excerpt}\nProvide a short title (3-6 words, max ${TITLE_MAX_CHARS} chars) summarizing what this session is about.\nReply ONLY as JSON: {"title": "..."}`;
+      let title = this.localTitleFromContext(userMessages);
+      // Kiro/Codex do not require a second agent process just to label a
+      // session. This also makes startup backfill work when Claude CLI is not
+      // logged in. Keep the richer Haiku title for Claude sessions when it is
+      // available, with the local title as a reliable fallback.
+      if (session.provider === AgentProvider.Claude) {
+        const excerpt = userMessages.slice(-3).join('\n');
+        const prompt = `These are the last few user-message excerpts from a coding session:\n${excerpt}\nProvide a short title (3-6 words, max ${TITLE_MAX_CHARS} chars) summarizing what this session is about.\nReply ONLY as JSON: {"title": "..."}`;
+        try {
+          const claudePath = getTerminalProvider(AgentProvider.Claude).resolveExecutable();
+          const { execFile } = await import('child_process');
+          const { promisify } = await import('util');
+          const execFileAsync = promisify(execFile);
+          const { stdout } = await execFileAsync(claudePath, [
+            '-p', prompt,
+            '--model', SUMMARIZE_MODEL,
+            '--output-format', 'text',
+          ], { timeout: 30000 });
+          const jsonMatch = stdout.trim().match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]) as { title?: string };
+            if (parsed.title) title = parsed.title.slice(0, TITLE_MAX_CHARS);
+          }
+        } catch (err) {
+          log.warn(`TTY title helper unavailable for ${session.id}; using local title:`, err);
+        }
+      }
 
-      const claudePath = getTerminalProvider(AgentProvider.Claude).resolveExecutable();
-      const { execFile } = await import('child_process');
-      const { promisify } = await import('util');
-      const execFileAsync = promisify(execFile);
-
-      const { stdout } = await execFileAsync(claudePath, [
-        '-p', prompt,
-        '--model', SUMMARIZE_MODEL,
-        '--output-format', 'text',
-      ], { timeout: 30000 });
-
-      const jsonMatch = stdout.trim().match(/\{[\s\S]*\}/);
-      if (!jsonMatch) return;
-
-      const parsed = JSON.parse(jsonMatch[0]) as { title?: string };
-      if (parsed.title) {
-        session.title = parsed.title.slice(0, TITLE_MAX_CHARS);
+      if (title) {
+        session.title = title;
         this.lastTitleGenAt.set(session.id, Date.now());
         log.info(`TTY session ${session.id} title: "${session.title}"`);
-        this.send(IpcChannel.SdkTitle, {
-          id: session.id,
-          title: session.title,
-          summary: '',
-        });
+        this.send(IpcChannel.SdkTitle, { id: session.id, title: session.title, summary: '' });
         this.persistState();
       }
     } catch (err) {
       log.error(`Failed to update TTY title for ${session.id}:`, err);
     }
+  }
+
+  private localTitleFromContext(messages: string[]): string {
+    if (messages.length === 0) return '';
+    let selected = messages[messages.length - 1];
+    if (messages.length > 1 && TITLE_CORRECTION_PREFIX_PATTERN.test(selected)) {
+      selected = messages[messages.length - 2];
+    }
+
+    const requestMarkers = Array.from(selected.matchAll(TITLE_USER_REQUEST_PATTERN));
+    const lastRequestMarker = requestMarkers[requestMarkers.length - 1];
+    if (lastRequestMarker?.index !== undefined) {
+      selected = selected.slice(lastRequestMarker.index + lastRequestMarker[0].length);
+    }
+
+    selected = selected
+      .replace(ANSI_ESCAPE_PATTERN, '')
+      .replace(/\x1b[78]/g, '')
+      .replace(TITLE_FILLER_PREFIX_PATTERN, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (/^Current active file:/i.test(selected)) {
+      const filePath = selected.slice(selected.indexOf(':') + 1).trim().split(/\s/)[0];
+      selected = path.basename(filePath, path.extname(filePath)).replace(/[-_]+/g, ' ');
+    }
+    if (!selected) return '';
+
+    if (selected.length > TITLE_MAX_CHARS) {
+      const candidate = selected.slice(0, TITLE_MAX_CHARS + 1);
+      const boundary = candidate.lastIndexOf(' ');
+      selected = boundary >= TITLE_MIN_TRUNCATION_CHARS
+        ? candidate.slice(0, boundary)
+        : selected.slice(0, TITLE_MAX_CHARS);
+    }
+    return selected.charAt(0).toUpperCase() + selected.slice(1);
+  }
+
+  /** Read title context from a provider transcript, when one is available. */
+  private titleContextForSession(session: SessionInfo): string[] {
+    const projectsDir = getTerminalProvider(session.provider).getHistoryDir?.(session.projectPath);
+    if (!projectsDir) return this.titleContextFromScrollback(session.id);
+
+    const encodedCwd = session.projectPath.replace(/[^a-zA-Z0-9]/g, '-');
+    const sessionDir = path.join(projectsDir, encodedCwd);
+    log.debug(`TTY title: checking ${sessionDir}`);
+    if (!fs.existsSync(sessionDir)) {
+      log.debug(`TTY title: dir not found for ${session.projectName}`);
+      return [];
+    }
+
+    // Prefer the session's own transcript so multi-session projects don't
+    // cross-title from a sibling's newer file; fall back to newest by mtime.
+    const ownFile = session.providerSessionId
+      ? path.join(sessionDir, `${session.providerSessionId}.jsonl`)
+      : null;
+    let sessionFile: string;
+    if (ownFile && fs.existsSync(ownFile)) {
+      sessionFile = ownFile;
+    } else {
+      const files = fs.readdirSync(sessionDir)
+        .filter((f) => f.endsWith('.jsonl'))
+        .map((f) => ({ name: f, mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+      if (files.length === 0) {
+        log.debug(`TTY title: no JSONL files for ${session.projectName}`);
+        return [];
+      }
+      sessionFile = path.join(sessionDir, files[0].name);
+    }
+
+    const lines = fs.readFileSync(sessionFile, 'utf-8').trim().split('\n');
+    log.debug(`TTY title: reading ${path.basename(sessionFile)} (${lines.length} lines)`);
+    const userMessages: string[] = [];
+    // Scan all lines — user messages can be sparse among tool calls and file snapshots.
+    for (const line of lines) {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type !== 'user') continue;
+        const raw = msg.message?.content ?? msg.content;
+        let text = '';
+        if (typeof raw === 'string') {
+          text = raw;
+        } else if (Array.isArray(raw)) {
+          text = raw
+            .filter((b: { type: string }) => b.type === 'text')
+            .map((b: { text: string }) => b.text)
+            .join(' ');
+        }
+        // Skip system/meta messages.
+        if (text && text.length > TITLE_CONTEXT_MIN_MESSAGE_CHARS && !text.startsWith('<')) {
+          userMessages.push(text.slice(0, TITLE_CONTEXT_MESSAGE_MAX_CHARS));
+        }
+      } catch { /* skip malformed lines */ }
+    }
+    return userMessages;
+  }
+
+  /**
+   * Extract rendered prompt lines from the terminal buffer for providers whose
+   * history is not exposed as JSONL. Kiro redraws the prompt after every typed
+   * character, so retain only complete (longest) versions of those lines. We
+   * intentionally do not summarize arbitrary tool/assistant output: it can
+   * contain command output or secrets that were never part of the user prompt.
+   * The buffer is session-specific, so parallel sessions cannot cross-title.
+   */
+  private titleContextFromScrollback(id: string): string[] {
+    const raw = this.outputBuffers.get(id);
+    if (!raw) return [];
+
+    const lines = raw
+      .replace(ANSI_ESCAPE_PATTERN, '')
+      .replace(/\r/g, '\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > TITLE_CONTEXT_MIN_MESSAGE_CHARS)
+      .filter((line) => !TERMINAL_TITLE_NOISE_PATTERNS.some((pattern) => pattern.test(line)));
+
+    const promptCandidates = lines
+      .filter((line) => line.startsWith(TERMINAL_PROMPT_MARKER))
+      .map((line) => line.slice(TERMINAL_PROMPT_MARKER.length).trim())
+      .filter((line) => line.length > TITLE_CONTEXT_MIN_MESSAGE_CHARS)
+      .filter((line) => !TERMINAL_TITLE_NOISE_PATTERNS.some((pattern) => pattern.test(line)));
+    const completePrompts = promptCandidates.filter((candidate, index, all) =>
+      !all.some((other, otherIndex) =>
+        otherIndex !== index && other.length > candidate.length && other.startsWith(candidate)
+      )
+    );
+    return this.uniqueRecentLines(completePrompts, TITLE_CONTEXT_MAX_LINES)
+      .map((line) => line.slice(0, TITLE_CONTEXT_MESSAGE_MAX_CHARS));
+  }
+
+  private uniqueRecentLines(lines: string[], limit: number): string[] {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (let i = lines.length - 1; i >= 0 && result.length < limit; i--) {
+      const line = lines[i];
+      if (seen.has(line)) continue;
+      seen.add(line);
+      result.push(line);
+    }
+    return result.reverse();
   }
 
   // Poll child processes for the focused session only: the ProcessMonitor
@@ -1070,7 +1196,18 @@ export class SessionManager {
     }
   }
 
-  private snapshotProviderHistory(provider: AgentProvider, projectPath: string): Set<string> {
+  private async snapshotProviderHistory(provider: AgentProvider, projectPath: string): Promise<Set<string>> {
+    const terminalProvider = getTerminalProvider(provider);
+    if (terminalProvider.listSessions) {
+      try {
+        const sessions = await terminalProvider.listSessions(projectPath);
+        return new Set(sessions.map((session) => session.id));
+      } catch (err) {
+        log.warn(`Failed to list ${provider} sessions for ${projectPath}:`, err);
+        return new Set();
+      }
+    }
+
     const dir = this.providerSessionDir(provider, projectPath);
     if (!dir || !fs.existsSync(dir)) return new Set();
     return new Set(fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl')));
@@ -1089,6 +1226,36 @@ export class SessionManager {
     if (!session) return;
     // Without an expectation, an already-bound session is left alone.
     if (!expectedId && session.providerSessionId) return;
+    const terminalProvider = getTerminalProvider(session.provider);
+    if (terminalProvider.listSessions) {
+      const claimed = new Set(
+        Array.from(this.sessions.values())
+          .filter((s) => s.id !== sessionId && s.providerSessionId)
+          .map((s) => s.providerSessionId as string)
+      );
+      const start = Date.now();
+      while (Date.now() - start < PROVIDER_SESSION_ID_DETECT_MS) {
+        await new Promise((r) => setTimeout(r, PROVIDER_SESSION_ID_POLL_MS));
+        let current: TerminalProviderSavedSession[];
+        try {
+          current = await terminalProvider.listSessions(session.projectPath);
+        } catch {
+          continue;
+        }
+        const candidates = current
+          .filter((candidate) => !baseline.has(candidate.id) && !claimed.has(candidate.id))
+          .sort((a, b) => a.updatedAt - b.updatedAt);
+        const picked = candidates[0];
+        if (!picked) continue;
+        session.providerSessionId = picked.id;
+        this.persistState();
+        log.info(`Session ${sessionId} bound to providerSessionId ${picked.id}`);
+        return;
+      }
+      log.warn(`Failed to detect providerSessionId for session ${sessionId} within ${PROVIDER_SESSION_ID_DETECT_MS}ms`);
+      return;
+    }
+
     const sessionDir = this.providerSessionDir(session.provider, session.projectPath);
     if (!sessionDir) return;
     const claimed = new Set(
@@ -1118,10 +1285,12 @@ export class SessionManager {
     log.warn(`Failed to detect providerSessionId for session ${sessionId} within ${PROVIDER_SESSION_ID_DETECT_MS}ms`);
   }
 
-  migrateProviderSessionIds(): void {
+  async migrateProviderSessionIds(): Promise<void> {
+    await this.migrateKiroProviderSessionIds();
+
     const byProject = new Map<string, SessionInfo[]>();
     for (const s of this.sessions.values()) {
-      if (s.mode !== SessionMode.Terminal || s.providerSessionId) continue;
+      if (s.mode !== SessionMode.Terminal || s.providerSessionId || s.provider === AgentProvider.Kiro) continue;
       const key = `${s.provider}::${s.projectPath}`;
       const list = byProject.get(key) || [];
       list.push(s);
@@ -1148,6 +1317,115 @@ export class SessionManager {
       }
     }
     this.persistState();
+  }
+
+  private async migrateKiroProviderSessionIds(): Promise<void> {
+    const sessions = Array.from(this.sessions.values()).filter(
+      (session) => session.mode === SessionMode.Terminal &&
+        session.provider === AgentProvider.Kiro &&
+        !session.providerSessionId
+    );
+    if (sessions.length === 0) return;
+
+    const listSessions = getTerminalProvider(AgentProvider.Kiro).listSessions;
+    if (!listSessions) return;
+    let savedSessions: TerminalProviderSavedSession[];
+    try {
+      savedSessions = await listSessions();
+    } catch (err) {
+      log.warn('Failed to list Kiro sessions for migration:', err);
+      return;
+    }
+
+    const claimed = new Set(
+      Array.from(this.sessions.values())
+        .filter((session) => session.provider === AgentProvider.Kiro && session.providerSessionId)
+        .map((session) => session.providerSessionId as string)
+    );
+    // Kiro omits messageCount from `--all-cwds` JSON, so the presence of a
+    // usable title is the reliable discriminator here. Blank sessions are
+    // already normalized to title: undefined by the provider parser.
+    const available = savedSessions.filter(
+      (saved) => saved.title && !claimed.has(saved.id)
+    );
+    const scored: Array<{ session: SessionInfo; saved: TerminalProviderSavedSession; score: number }> = [];
+    for (const session of sessions) {
+      const context = this.titleContextFromScrollback(session.id);
+      const createdAt = this.scrollbackCreatedAt(session.id);
+      for (const saved of available) {
+        if (saved.projectPath !== session.projectPath || !saved.title) continue;
+        const contentScore = this.providerSessionContentScore(context, saved.title);
+        const delta = createdAt > 0 && saved.updatedAt > 0
+          ? Math.abs(saved.updatedAt - createdAt)
+          : KIRO_MIGRATION_MAX_TIME_DELTA_MS;
+        const timeScore = Math.max(0, 1 - delta / KIRO_MIGRATION_MAX_TIME_DELTA_MS);
+        const score = contentScore * 2 + timeScore;
+        if (score >= KIRO_MIGRATION_MIN_SCORE) scored.push({ session, saved, score });
+      }
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    const assignedSessions = new Set<string>();
+    const assignedProviderSessions = new Set<string>();
+    for (const match of scored) {
+      if (assignedSessions.has(match.session.id) || assignedProviderSessions.has(match.saved.id)) continue;
+      match.session.providerSessionId = match.saved.id;
+      // Replace stale terminal-chrome titles left by older builds with a title
+      // derived from the actual Kiro conversation being recovered.
+      match.session.title = this.localTitleFromContext([match.saved.title || '']);
+      assignedSessions.add(match.session.id);
+      assignedProviderSessions.add(match.saved.id);
+      log.info(`Migrated Kiro session ${match.session.id} → providerSessionId ${match.saved.id}`);
+      if (match.session.title) {
+        this.send(IpcChannel.SdkTitle, { id: match.session.id, title: match.session.title, summary: '' });
+      }
+    }
+    this.persistState();
+  }
+
+  private scrollbackCreatedAt(id: string): number {
+    try {
+      const stats = fs.statSync(this.scrollbackFile(id));
+      return stats.birthtimeMs > 0 ? stats.birthtimeMs : stats.ctimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
+  private providerSessionContentScore(context: string[], title: string): number {
+    const normalizedTitle = this.normalizeTitleMatchText(title);
+    if (!normalizedTitle) return 0;
+    const titleWords = this.titleMatchWords(normalizedTitle);
+    let best = 0;
+    for (const message of context) {
+      const normalizedMessage = this.normalizeTitleMatchText(message);
+      if (!normalizedMessage) continue;
+      if (normalizedMessage.startsWith(normalizedTitle) || normalizedTitle.startsWith(normalizedMessage)) {
+        best = Math.max(best, 2);
+        continue;
+      }
+      if (titleWords.size === 0) continue;
+      const messageWords = this.titleMatchWords(normalizedMessage);
+      let overlap = 0;
+      for (const word of titleWords) {
+        if (messageWords.has(word)) overlap++;
+      }
+      best = Math.max(best, overlap / titleWords.size);
+    }
+    return best;
+  }
+
+  private normalizeTitleMatchText(value: string): string {
+    return value
+      .toLowerCase()
+      .replace(/\.\.\.$/, '')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+  }
+
+  private titleMatchWords(value: string): Set<string> {
+    const words = value.match(TITLE_MATCH_WORD_PATTERN) || [];
+    return new Set(words.filter((word) => !TITLE_MATCH_STOP_WORDS.has(word)));
   }
 
   // Only `ingest` runs per chunk (cheap: strips ANSI from the chunk and

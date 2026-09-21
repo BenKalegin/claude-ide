@@ -159,7 +159,7 @@ export function App(): React.ReactElement {
         <div className="content-area">
           <div className="view-area">
             {!activeSessionId ? (
-              <TerminalView sessionId={null} />
+              <TerminalView sessionId={null} provider={null} />
             ) : !activeSession ? (
               <div className="terminal-placeholder">
                 <div className="placeholder-text">Loading session...</div>
@@ -167,7 +167,7 @@ export function App(): React.ReactElement {
             ) : activeSession.mode === SessionMode.Sdk ? (
               <SdkView sessionId={activeSessionId} />
             ) : (
-              <TerminalView sessionId={activeSessionId} />
+              <TerminalView sessionId={activeSessionId} provider={activeSession.provider} />
             )}
           </div>
           {isTerminal && activeSessionId && (

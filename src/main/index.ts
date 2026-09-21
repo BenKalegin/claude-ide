@@ -95,7 +95,7 @@ app.whenReady().then(() => {
         ipcLog.info('SDK session created:', s.id);
         return s;
       }
-      const s = sessionManager.createSession(projectPath, mode, provider, unbounded);
+      const s = await sessionManager.createSession(projectPath, mode, provider, unbounded);
       ipcLog.info('Terminal session created:', s.id, 'pid:', s.pid);
       return s;
     }
@@ -241,9 +241,9 @@ app.whenReady().then(() => {
   const win = createWindow();
 
   // Wait for renderer to load before resuming sessions
-  win.webContents.on('did-finish-load', () => {
-    sessionManager.migrateProviderSessionIds();
-    sessionManager.autoResumeSessions();
+  win.webContents.on('did-finish-load', async () => {
+    await sessionManager.migrateProviderSessionIds();
+    await sessionManager.autoResumeSessions();
     sessionManager.startTitleUpdater();
   });
 

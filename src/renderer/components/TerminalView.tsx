@@ -2,16 +2,18 @@ import React, { useEffect, useRef } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
-import { TtyKeySequence } from '../../core/constants';
+import { AgentProvider, TtyKeySequence } from '../../core/constants';
 
 interface Props {
   sessionId: string | null;
+  provider: AgentProvider | null;
 }
 
 interface CachedTerminal {
   terminal: Terminal;
   fitAddon: FitAddon;
   element: HTMLDivElement;
+  followsLiveOutput: boolean;
 }
 
 // Per-session undo/redo stack for the in-CLI prompt editor.
@@ -27,6 +29,19 @@ const inputTrackers = new Map<string, InputTracker>();
 
 // Buffer data for terminals not yet created
 const pendingData = new Map<string, string[]>();
+
+function writeTerminal(cached: CachedTerminal, data: string, reset = false): void {
+  if (reset) cached.terminal.reset();
+  if (!cached.followsLiveOutput) {
+    cached.terminal.write(data);
+    return;
+  }
+
+  // Kiro's TUI repeatedly moves its cursor back through the rendered chain of
+  // thought. Follow output only after xterm has parsed the full update so those
+  // cursor movements cannot leave the viewport above the current screen.
+  cached.terminal.write(data, () => cached.terminal.scrollToBottom());
+}
 
 function getTracker(sessionId: string): InputTracker {
   let tracker = inputTrackers.get(sessionId);
@@ -133,8 +148,7 @@ function ensureGlobalListener(): void {
     if (cached) {
       // `reset` marks a scrollback snapshot from main (sent on focus) — clear
       // the terminal first so refocusing doesn't append a duplicate transcript.
-      if (reset) cached.terminal.reset();
-      cached.terminal.write(data);
+      writeTerminal(cached, data, reset);
     } else if (reset) {
       // Snapshot for a not-yet-created terminal: it becomes the buffer baseline.
       pendingData.set(id, [data]);
@@ -146,7 +160,7 @@ function ensureGlobalListener(): void {
   });
 }
 
-function getOrCreateTerminal(sessionId: string): CachedTerminal {
+function getOrCreateTerminal(sessionId: string, provider: AgentProvider): CachedTerminal {
   const existing = terminalCache.get(sessionId);
   if (existing) return existing;
 
@@ -181,11 +195,19 @@ function getOrCreateTerminal(sessionId: string): CachedTerminal {
   terminal.loadAddon(fitAddon);
   terminal.open(element);
 
+  const cached: CachedTerminal = {
+    terminal,
+    fitAddon,
+    element,
+    followsLiveOutput: provider === AgentProvider.Kiro,
+  };
+  terminalCache.set(sessionId, cached);
+
   // Flush any buffered data
   const buffered = pendingData.get(sessionId);
   if (buffered) {
     for (const chunk of buffered) {
-      terminal.write(chunk);
+      writeTerminal(cached, chunk);
     }
     pendingData.delete(sessionId);
   }
@@ -201,12 +223,10 @@ function getOrCreateTerminal(sessionId: string): CachedTerminal {
     window.api.sessions.resize(sessionId, cols, rows);
   });
 
-  const cached: CachedTerminal = { terminal, fitAddon, element };
-  terminalCache.set(sessionId, cached);
   return cached;
 }
 
-export function TerminalView({ sessionId }: Props): React.ReactElement {
+export function TerminalView({ sessionId, provider }: Props): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -215,7 +235,7 @@ export function TerminalView({ sessionId }: Props): React.ReactElement {
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || !sessionId) {
+    if (!container || !sessionId || !provider) {
       // No terminal visible — tell main to stop streaming any session to us.
       window.api.sessions.setActive(null);
       return;
@@ -226,7 +246,7 @@ export function TerminalView({ sessionId }: Props): React.ReactElement {
       container.removeChild(container.firstChild);
     }
 
-    const cached = getOrCreateTerminal(sessionId);
+    const cached = getOrCreateTerminal(sessionId, provider);
     container.appendChild(cached.element);
 
     // Focus this session in main: it stops streaming the previous one and
@@ -253,7 +273,7 @@ export function TerminalView({ sessionId }: Props): React.ReactElement {
       window.api.sessions.setActive(null);
       // Don't remove element — just leave it; next effect will swap it
     };
-  }, [sessionId]);
+  }, [sessionId, provider]);
 
   if (!sessionId) {
     return (

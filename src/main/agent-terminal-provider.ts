@@ -1,7 +1,8 @@
-import { execSync } from 'child_process';
+import { execFile, execSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { promisify } from 'util';
 import {
   AgentProvider,
   DEFAULT_CODEX_MODEL,
@@ -21,8 +22,24 @@ const TerminalCommand = {
 const KiroCliArg = {
   Chat: 'chat',
   Resume: '--resume',
+  ResumeId: '--resume-id',
   Model: '--model',
+  ListSessions: '--list-sessions',
+  AllCwds: '--all-cwds',
+  Format: '--format',
 } as const;
+
+const KiroOutputFormat = {
+  Json: 'json',
+} as const;
+
+const KiroSessionSource = {
+  V2: 'v2',
+} as const;
+
+const KIRO_SESSION_LIST_TIMEOUT_MS = 10_000;
+const KIRO_SESSION_LIST_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
+const KIRO_UNTITLED_SESSION = '(no title)';
 
 const CliArg = {
   Continue: '--continue',
@@ -58,6 +75,15 @@ const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const FIRST_LINE_INDEX = 0;
 const WINDOWS_LOCAL_CODEX_DIR = path.join(os.homedir(), 'AppData', 'Local', 'OpenAI', 'Codex', 'bin');
 const WINDOWS_CODEX_EXE = 'codex.exe';
+const execFileAsync = promisify(execFile);
+
+export interface TerminalProviderSavedSession {
+  id: string;
+  projectPath: string;
+  title?: string;
+  updatedAt: number;
+  messageCount: number;
+}
 
 export interface TerminalProviderSession {
   model?: string;
@@ -76,6 +102,7 @@ export interface AgentTerminalProvider {
   buildStartArgs(model?: string, unbounded?: boolean, sessionId?: string): string[];
   buildResumeArgs(session: TerminalProviderSession): string[];
   getHistoryDir?(projectPath: string): string;
+  listSessions?(projectPath?: string): Promise<TerminalProviderSavedSession[]>;
 }
 
 // Memoized: resolution shells out synchronously (`which`/`where`), and it runs
@@ -155,6 +182,50 @@ function buildKiroModelArgs(model?: string): string[] {
   return [KiroCliArg.Model, model];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+async function listKiroSessions(projectPath?: string): Promise<TerminalProviderSavedSession[]> {
+  const executable = resolveCommandPath(TerminalCommand.Kiro);
+  const args = [
+    KiroCliArg.Chat,
+    KiroCliArg.ListSessions,
+    ...(projectPath ? [] : [KiroCliArg.AllCwds]),
+    KiroCliArg.Format,
+    KiroOutputFormat.Json,
+  ];
+  const { stdout } = await execFileAsync(executable, args, {
+    cwd: projectPath || os.homedir(),
+    encoding: 'utf-8',
+    timeout: KIRO_SESSION_LIST_TIMEOUT_MS,
+    maxBuffer: KIRO_SESSION_LIST_MAX_BUFFER_BYTES,
+  });
+  const parsed: unknown = JSON.parse(stdout);
+  if (!Array.isArray(parsed)) return [];
+
+  const sessions: TerminalProviderSavedSession[] = [];
+  for (const envelope of parsed) {
+    if (!isRecord(envelope) || typeof envelope.cwd !== 'string' || !Array.isArray(envelope.sessions)) continue;
+    for (const candidate of envelope.sessions) {
+      if (!isRecord(candidate) || candidate.source !== KiroSessionSource.V2) continue;
+      if (typeof candidate.sessionId !== 'string') continue;
+      const updatedAt = typeof candidate.updatedAt === 'string' ? Date.parse(candidate.updatedAt) : 0;
+      const title = typeof candidate.title === 'string' && candidate.title !== KIRO_UNTITLED_SESSION
+        ? candidate.title
+        : undefined;
+      sessions.push({
+        id: candidate.sessionId,
+        projectPath: envelope.cwd,
+        title,
+        updatedAt: Number.isNaN(updatedAt) ? 0 : updatedAt,
+        messageCount: typeof candidate.messageCount === 'number' ? candidate.messageCount : 0,
+      });
+    }
+  }
+  return sessions;
+}
+
 const claudeTerminalProvider: AgentTerminalProvider = {
   provider: AgentProvider.Claude,
   redrawsHistoryOnResume: true,
@@ -188,18 +259,21 @@ const codexTerminalProvider: AgentTerminalProvider = {
   buildResumeArgs: (session) => buildCodexModelArgs(session.model),
 };
 
-// Kiro runs as `kiro-cli chat`. Like Codex, it manages its own conversation
-// history, so we don't pin/detect a provider session id; resume just asks the
-// CLI to continue the most recent conversation in the project dir (`--resume`).
+// Kiro runs as `kiro-cli chat` and exposes its saved conversations through the
+// CLI. Bind each app session to that stable id so parallel sessions in one
+// project resume independently instead of all selecting the newest conversation.
 const kiroTerminalProvider: AgentTerminalProvider = {
   provider: AgentProvider.Kiro,
   resolveExecutable: () => resolveCommandPath(TerminalCommand.Kiro),
   buildStartArgs: (model) => [KiroCliArg.Chat, ...buildKiroModelArgs(model)],
   buildResumeArgs: (session) => [
     KiroCliArg.Chat,
-    KiroCliArg.Resume,
+    ...(session.providerSessionId
+      ? [KiroCliArg.ResumeId, session.providerSessionId]
+      : [KiroCliArg.Resume]),
     ...buildKiroModelArgs(session.model),
   ],
+  listSessions: listKiroSessions,
 };
 
 export function getTerminalProvider(provider: AgentProvider): AgentTerminalProvider {
