@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState, memo } from 'react';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { useSessionStore } from '../stores/session-store';
+import { MarkdownContent } from './MarkdownContent';
 import {
   AgentProvider,
   ClaudeModel,
@@ -101,7 +100,7 @@ const ChatMessage = memo(function ChatMessage({ msg }: { msg: SdkMessage }) {
   }
   return (
     <div className="chat-row chat-row-assistant">
-      <div className="md"><Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown></div>
+      <MarkdownContent content={msg.content} />
     </div>
   );
 });

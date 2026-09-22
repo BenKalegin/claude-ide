@@ -30,6 +30,12 @@ import { createTtyState, ingest, snapshot, clearWaiting } from './tty-activity';
 import type { TtyActivitySnapshot } from './tty-activity';
 import { getDefaultModelForProvider, getTerminalProvider } from './agent-terminal-provider';
 import type { TerminalProviderSavedSession } from './agent-terminal-provider';
+import {
+  readClaudeTerminalTranscript,
+  readKiroTerminalTranscript,
+  unsupportedTerminalTranscript,
+} from './terminal-transcript';
+import type { TerminalTranscript } from '../core/constants';
 
 const ACTIVITY_POLL_MS = 750;
 const PROVIDER_SESSION_ID_DETECT_MS = 6000;
@@ -282,6 +288,38 @@ export class SessionManager {
     this.focusedSessionId = id;
     if (id === null) return;
     this.send(IpcChannel.SessionData, { id, data: this.outputBuffers.get(id) ?? '', reset: true });
+  }
+
+  getTerminalTranscript(id: string): TerminalTranscript | null {
+    const session = this.sessions.get(id);
+    if (!session || session.mode !== SessionMode.Terminal) return null;
+    if (session.provider === AgentProvider.Kiro) {
+      if (!session.providerSessionId) {
+        return {
+          supported: true,
+          provider: session.provider,
+          messages: [],
+          updatedAt: 0,
+        };
+      }
+      return readKiroTerminalTranscript(session.providerSessionId);
+    }
+    if (session.provider !== AgentProvider.Claude) {
+      return unsupportedTerminalTranscript(
+        session.provider,
+        `Rendered transcripts for ${session.provider} terminal sessions are not available yet.`,
+      );
+    }
+    const filePath = this.transcriptPath(session);
+    if (!filePath) {
+      return {
+        supported: true,
+        provider: session.provider,
+        messages: [],
+        updatedAt: 0,
+      };
+    }
+    return readClaudeTerminalTranscript(filePath);
   }
 
   /** Send IPC to renderer, silently skipping if the window/frame is destroyed. */

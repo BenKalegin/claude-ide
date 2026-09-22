@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 type SessionMode = 'terminal' | 'sdk';
-type AgentProvider = 'claude' | 'codex';
+type AgentProvider = 'claude' | 'codex' | 'kiro';
 
 interface UsageSummary {
   inputTokens: number;
@@ -44,6 +44,26 @@ interface SdkTodo {
 interface ChildProcess {
   pid: number;
   command: string;
+}
+
+interface TerminalTranscriptMessage {
+  id: string;
+  type: 'user' | 'assistant' | 'tool';
+  content: string;
+  timestamp?: number;
+  toolName?: string;
+  toolInput?: string;
+  toolResult?: string;
+  toolDiff?: string;
+  isError?: boolean;
+}
+
+interface TerminalTranscript {
+  supported: boolean;
+  provider: AgentProvider;
+  messages: TerminalTranscriptMessage[];
+  updatedAt: number;
+  unavailableReason?: string;
 }
 
 interface SdkMessage {
@@ -96,6 +116,7 @@ interface Window {
       getProjectNames: () => Promise<Record<string, string>>;
       list: () => Promise<SessionInfo[]>;
       getProcesses: (id: string) => Promise<ChildProcess[]>;
+      getTranscript: (id: string) => Promise<TerminalTranscript | null>;
       killProcess: (pid: number) => Promise<boolean>;
       write: (id: string, data: string) => void;
       resize: (id: string, cols: number, rows: number) => void;

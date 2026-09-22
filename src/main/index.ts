@@ -175,6 +175,20 @@ app.whenReady().then(() => {
     return sessionManager.killChildProcess(pid);
   });
 
+  ipcMain.handle(IpcChannel.GetTerminalTranscript, async (_e, id: string) => {
+    try {
+      const transcript = sessionManager.getTerminalTranscript(id);
+      ipcLog.debug('get-terminal-transcript', id, {
+        supported: transcript?.supported,
+        messages: transcript?.messages.length,
+      });
+      return transcript;
+    } catch (error) {
+      ipcLog.error('get-terminal-transcript failed', id, error);
+      throw error;
+    }
+  });
+
   ipcMain.on(IpcChannel.WriteToSession, (_e, { id, data }: { id: string; data: string }) => {
     sessionManager.writeToSession(id, data);
   });

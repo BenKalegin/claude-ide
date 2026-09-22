@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ProjectTree } from './components/ProjectTree';
 import { TerminalView } from './components/TerminalView';
+import { TerminalSessionView } from './components/TerminalSessionView';
 import { SdkView } from './components/SdkView';
 import { ProcessMonitor } from './components/ProcessMonitor';
 import { Resizer } from './components/Resizer';
@@ -167,7 +168,11 @@ export function App(): React.ReactElement {
             ) : activeSession.mode === SessionMode.Sdk ? (
               <SdkView sessionId={activeSessionId} />
             ) : (
-              <TerminalView sessionId={activeSessionId} provider={activeSession.provider} />
+              <TerminalSessionView
+                key={activeSessionId}
+                sessionId={activeSessionId}
+                provider={activeSession.provider}
+              />
             )}
           </div>
           {isTerminal && activeSessionId && (

@@ -32,6 +32,7 @@ export const IpcChannel = {
   WriteToSession: 'write-to-session',
   ResizeSession: 'resize-session',
   SetActiveSession: 'set-active-session',
+  GetTerminalTranscript: 'get-terminal-transcript',
   SdkSendMessage: 'sdk-send-message',
   SdkCancelQuery: 'sdk-cancel-query',
   SdkInterruptQuery: 'sdk-interrupt-query',
@@ -56,6 +57,34 @@ export const IpcChannel = {
   SdkTodos: 'sdk-todos',
 } as const;
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
+
+export const TerminalTranscriptMessageType = {
+  User: 'user',
+  Assistant: 'assistant',
+  Tool: 'tool',
+} as const;
+export type TerminalTranscriptMessageType =
+  (typeof TerminalTranscriptMessageType)[keyof typeof TerminalTranscriptMessageType];
+
+export interface TerminalTranscriptMessage {
+  id: string;
+  type: TerminalTranscriptMessageType;
+  content: string;
+  timestamp?: number;
+  toolName?: string;
+  toolInput?: string;
+  toolResult?: string;
+  toolDiff?: string;
+  isError?: boolean;
+}
+
+export interface TerminalTranscript {
+  supported: boolean;
+  provider: AgentProvider;
+  messages: TerminalTranscriptMessage[];
+  updatedAt: number;
+  unavailableReason?: string;
+}
 
 // Claude's task-tracking tool. We auto-allow it (no permission prompt — it's
 // internal bookkeeping) and render its task list in the SDK view, mirroring

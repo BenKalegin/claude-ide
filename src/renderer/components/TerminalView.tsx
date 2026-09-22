@@ -26,6 +26,7 @@ interface InputTracker {
 
 const terminalCache = new Map<string, CachedTerminal>();
 const inputTrackers = new Map<string, InputTracker>();
+const TERMINAL_LINE_HEIGHT = 1.2;
 
 // Buffer data for terminals not yet created
 const pendingData = new Map<string, string[]>();
@@ -185,7 +186,7 @@ function getOrCreateTerminal(sessionId: string, provider: AgentProvider): Cached
     },
     fontFamily: '"SF Mono", "Fira Code", "JetBrains Mono", monospace',
     fontSize: 13,
-    lineHeight: 1.0,
+    lineHeight: TERMINAL_LINE_HEIGHT,
     cursorBlink: false,
     cursorStyle: 'bar',
     cursorInactiveStyle: 'none',

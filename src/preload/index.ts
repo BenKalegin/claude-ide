@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { AgentProvider, DEFAULT_AGENT_PROVIDER, IpcChannel, SessionMode } from '../core/constants';
-import type { SdkImage, SdkPermissionRequestPayload, SdkPermissionResponsePayload, SdkTodo } from '../core/constants';
+import type {
+  SdkImage,
+  SdkPermissionRequestPayload,
+  SdkPermissionResponsePayload,
+  SdkTodo,
+  TerminalTranscript,
+} from '../core/constants';
 
 export interface UsageSummary {
   inputTokens: number;
@@ -69,6 +75,9 @@ const api = {
 
     getProcesses: (id: string): Promise<ChildProcess[]> =>
       ipcRenderer.invoke(IpcChannel.GetChildProcesses, id),
+
+    getTranscript: (id: string): Promise<TerminalTranscript | null> =>
+      ipcRenderer.invoke(IpcChannel.GetTerminalTranscript, id),
 
     killProcess: (pid: number): Promise<boolean> =>
       ipcRenderer.invoke(IpcChannel.KillChildProcess, pid),
